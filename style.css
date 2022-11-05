@@ -29,8 +29,8 @@
 }
 
 @font-face {
-	font-family: "Iosevka";
-	src: url(./assets/fonts/iosevka-term-regular.ttf);
+	font-family: "Century";
+	src: url(./assets/fonts/Century-Gothic.ttf);
 }
 
 * {
@@ -55,7 +55,7 @@ h1 span {
 }
 
 p {
-	font-family: "Iosevka";
+	font-family: "Century";
 	color: #ebebeb;
 	font-size: 16px;
 	padding: 5px;
