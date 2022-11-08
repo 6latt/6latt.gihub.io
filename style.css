@@ -108,7 +108,7 @@ h1 a:hover {
 h2 {
 	font-family: "Kanye";
 	color: #ebebeb;
-	font-size: 5em;
+	font-size: 7vw;
 	margin: auto;
 	margin-left: auto;
 	margin-right: auto;
@@ -132,22 +132,20 @@ h2 span {
 	box-sizing: border-box
 }
 
-@media only screen {
-	.module {
-		margin: auto;
-		margin-left: 25%;
-		margin-right: 25%;
-		margin-top: 20px;
-		margin-bottom: 20px;
-	}
+.module {
+	margin: auto;
+	margin-left: 25%;
+	margin-right: 25%;
+	margin-top: 20px;
+	margin-bottom: 20px;
+}
 
-	.middle {
-		display: inline;
-	}
-	h1 {
-		font-size: 22px;
-	}
-	p {
-		font-size: 18px;
-	}
+.middle {
+	display: inline;
+}
+h1 {
+	font-size: 22px;
+}
+p {
+	font-size: 18px;
 }
