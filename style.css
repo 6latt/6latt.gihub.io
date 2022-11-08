@@ -70,9 +70,10 @@ p {
 	font-family: "Century";
 	color: #ebebeb;
 	font-size: 16px;
-	margin: 15px;
+	margin: auto;
 	padding: 5px;
 	border: 2px solid #ebebeb;
+	display: table;
 }
 
 a {
