@@ -97,22 +97,6 @@ h1 a:hover {
 	  text-decoration: underline;
 }
 
-.module {
-	margin: 80px;
-	margin-top: 40px;
-	margin-bottom: 00px;
-}
-
-.middle {
-	display: flex;
-	justify-content: center;
-}
-
-.middle .module {
-	width: 100%;
-	margin-top: 40px;
-}
-
 .pictureOfMe {
 	width: 400px;
 	height: 400px;
@@ -147,6 +131,7 @@ h2 span {
 	-webkit-box-sizing: border-box;
 	box-sizing: border-box
 }
+
 @media only screen {
 	.module {
 		margin: auto;
