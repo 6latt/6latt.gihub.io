@@ -130,6 +130,7 @@ h2 {
 	margin-right: auto;
 	margin-top: 20px;
 	margin-bottom: 20px;
+	display: table;
 }
 
 h2 span {
