@@ -124,7 +124,11 @@ h1 a:hover {
 h2 {
 	font-family: "Kanye";
 	color: #ebebeb;
-	font-size: 40px;
+	font-size: 100px;
+	max-width: 468px;
+	margin: auto;
+	margin-top: 20px;
+	margin-bottom: 20px;
 }
 
 h2 span {
