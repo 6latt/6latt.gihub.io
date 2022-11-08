@@ -114,6 +114,7 @@ h2 {
     margin-bottom: 20px;
     display: table;
     text-align: center;
+	text-shadow: 2px 2px 4px #726969;
 }
 
 h2 span {
