@@ -47,7 +47,6 @@
 body {
 	background-color: rgb(1, 4, 9);
 	line-height: 1.6;
-	overflow-wrap: break-word;
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
 	font-size: 1.1em;
