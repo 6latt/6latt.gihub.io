@@ -33,6 +33,11 @@
 	src: url(./assets/fonts/Century-Gothic.ttf);
 }
 
+@font-face {
+	font-family: "Kanye";
+	src: url(./assets/fonts/SF\ TransRobotics\ Bold\ Italic.ttf);
+}
+
 * {
 	padding: none;
 	margin: auto;
@@ -47,6 +52,7 @@ body {
 	-moz-osx-font-smoothing: grayscale;
 	font-size: 1.1em;
 }
+
 
 h1 {
 	font-family: "Century";
@@ -116,9 +122,9 @@ h1 a:hover {
 }
 
 h2 {
-	font-family: "Century";
-	color: #000000;
-	font-size: 16px;
+	font-family: "Kanye";
+	color: #ebebeb;
+	font-size: 40px;
 }
 
 h2 span {
