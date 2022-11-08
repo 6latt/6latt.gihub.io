@@ -116,6 +116,14 @@ h2 {
     text-align: center;
 	text-shadow: 2px 2px 4px #726969, 0 0 5px #0000ff57, 0.08em 0.05em #0000ff57;
 }
+
+h3 {
+	font-family: "Helvetica";
+	font-size: 18px;
+	color: #ebebeb;
+	letter-spacing: -.05em;
+}
+
 h2 span {
 	padding: 4px;
 	background-color: #ebebeb;
