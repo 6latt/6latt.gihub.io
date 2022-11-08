@@ -46,14 +46,15 @@ body {
 h1 {
 	font-family: "Century";
 	font-size: 18px;
-	color: #000000;
+	font-style: italic;
+	color: #ebebeb;
 }
 
-h1 span {
+/* h1 span {
 	padding: 2px;
 	background-color: #ebebeb; 
 }
-
+*/
 p {
 	font-family: "Century";
 	color: #ebebeb;
