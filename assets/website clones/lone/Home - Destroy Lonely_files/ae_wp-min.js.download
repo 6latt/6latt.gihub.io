@@ -1,0 +1,4091 @@
+/**************************
+ *
+ * frontend JS for AE Connect WordPress plugin
+ * AEJSWP object already created and placed on page by WP, contains lots of settings
+ *
+ * (C) 2016 Appreciation Engine Ltd. and Push Entertainment Ltd.
+ *
+ */
+//
+// document init
+//
+// helper to allow us to wait for the aeJS framework before updating custom forms on page load
+// we cannot simply use aeJSReady for 2 reasons;
+// DOM may not be loaded, framework reload may be triggered for some redirect flows (dynamic reload)
+AEJSWP.updateCustomForms_afterWaitForAeJS = function () {
+    if (typeof (AEJSWP.aeJS) !== 'undefined') {
+        AEJSWP.updateCustomForms();
+        // ensure aeJS framework knows about any new triggers added
+        AEJSWP.aeJS.trigger.attach();
+    } else {
+        AEJSWP.wait_for_aejs_retry_count++;
+        // wait a maximum of 1 minute
+        if (AEJSWP.wait_for_aejs_retry_count > 600) {
+            console.log('AEJSWP: Giving up waiting for aeJS after 1 minute - something is broke');	// always output this even on prod, useful info
+        } else {
+            setTimeout(AEJSWP.updateCustomForms_afterWaitForAeJS, 100);	// check every 100ms
+        }
+    }
+};
+jQuery(document).ready(function () {
+
+    // handle any errors from redirect flow
+    AEJSWP.redirectFlowSigninErrorCheck();
+
+    // add authenticator data-ae-auth-link triggers
+    AEJSWP.addAuthenticatorClickHandler();
+
+    // update any auth connect anchors on page
+    if (typeof (AEJSWP.aeJS) != 'undefined') {
+        AEJSWP.authConnect(AEJSWP.aeJS.user);
+    }
+
+    //add custom form click handlers & listeners that handle interface changes inside custom forms
+    AEJSWP.addCustomFormListeners();
+
+    // ensure aeJS framework knows about any new triggers added
+    if (typeof AEJSWP.aeJS !== 'undefined') {
+        AEJSWP.aeJS.trigger.attach();
+    }
+
+    // pre-populate custom forms if AE session allows
+    // restore near completed flows (verify email/password reset)
+    // restore optin states
+    // update any mailing list custom forms already completed
+    // NB we need to wait for the aeJS framework to load before we can do this
+    AEJSWP.wait_for_aejs_retry_count = 0;
+    AEJSWP.updateCustomForms_afterWaitForAeJS();
+
+    //update terms links colors based on page colors
+    jQuery('.ae-cform-container:not(.-has-modal)').each(function() {
+
+        //auto color for term links and optin labels
+        var elements = jQuery('.ae-cform-optin-terms a, .ae-cform-optins-container .ae-cform-optin-label', jQuery(this));
+
+        AEJSWP.setAutoColors(elements);
+    });
+
+    for (const form in AEJSWP.custom_forms) {
+        if (typeof AEJSWP.custom_forms[form] === 'object') {
+            AEJSWP.custom_forms[form].selectors = []
+            jQuery('.ae-cform-container,.ae-cform-modal-container').each(
+                (id, cform) => 
+                    typeof jQuery(cform).data('hash-selector') !== 'undefined'
+                    ? AEJSWP.custom_forms[form].selectors.push(jQuery(cform).data('hash-selector'))
+                    : null
+            )
+        }
+    }
+
+});
+
+//
+// AE init
+// this function is fired by the aeJS framework when it's ready
+//
+function AEJSReady(aeJS) {
+
+    AEJSWP.debugOutput('AEJSReady fired');
+
+    // show a warning if Safari private browsing mode is enabled
+    if (AEJSWP.detect_safari_incognito()) {
+        AEJSWP.display_browser_config_error('safari_incognito');
+    } else {
+        // show a warning if cookies are disabled
+        if (!AEJSWP.detect_cookies_enabled()) {
+            AEJSWP.display_browser_config_error('cookies_disabled');
+        }
+    }
+
+    if (typeof (AEJSWP.ae_framework_reloaded) != 'undefined' && AEJSWP.ae_framework_reloaded) {
+        AEJSWP.debugOutput('But not re-running AEJSReady init as this is a framework reload, instead starting auth flow with provider = ' + AEJSWP.auth_service_after_reload);
+        AEJSWP.aeJS.trigger.authenticate(AEJSWP.auth_service_after_reload, 'register');
+        return;		// don't re-run this if we're reloading the aeJS framework - it's already been run
+    }
+
+    // keep reference to the aeJS object
+    AEJSWP.aeJS = aeJS;
+
+    // add ae js event handlers
+    aeJS.events.onFlow.addHandler(AEJSWP.flowHandler);
+    aeJS.events.onLogin.addHandler(AEJSWP.loginHandler);
+    aeJS.events.onLogout.addHandler(AEJSWP.logoutHandler);
+    aeJS.events.onUser.addHandler(AEJSWP.userHandler);
+    aeJS.events.onWindow.addHandler(AEJSWP.windowHandler);
+    aeJS.events.onMobileDetect.addHandler(AEJSWP.mobileDetectHandler);
+    aeJS.events.onEmailVerify.addHandler(AEJSWP.emailVerifyHandler);
+    aeJS.events.onPasswordReset.addHandler(AEJSWP.passwordResetHandler);
+
+    // add our settings
+    // NB: these are mostly used by the widget - there is a separate applyCustomFormSettings function for modifying aeJS settings for custom form flow
+    if (AEJSWP.flow_type == 'detect') {
+        // turn on mobile_detect
+        aeJS.settings['mobile_detect'] = true;
+        // set flow to be modal initially - the onMobileDetect handler will set this to false if needed
+        aeJS.settings['auth_window'] = true;
+    } else {
+        // use backend setting
+        aeJS.settings['auth_window'] = (AEJSWP.flow_type == 'modal') ? true : false;
+    }
+    aeJS.settings['extra_fields_screen'] = AEJSWP.extra_fields_screen;
+    aeJS.settings['extra_fields'] = AEJSWP.extra_fields;
+    aeJS.settings['minimum_age'] = (AEJSWP.minimum_age) ? AEJSWP.minimum_age : null;
+    aeJS.settings['services'] = AEJSWP.services;
+    aeJS.settings['flow_css'] = AEJSWP.flow_css != '' ? AEJSWP.flow_css : null;
+    aeJS.settings['verify_email'] = (AEJSWP.verify_email) ? true : false;
+    aeJS.settings['verify_email_for_login'] = (AEJSWP.verify_email) ? true : false;
+    aeJS.settings['flow_text'] = AEJSWP.flow_text;
+    aeJS.settings['no_email'] = (AEJSWP.no_email) ? true : false;
+    aeJS.settings['hide_email_form'] = (AEJSWP.hide_email_form) ? true : false;
+    aeJS.settings['social_first'] = (AEJSWP.social_first) ? true : false;
+    aeJS.settings['return_url'] = AEJSWP.return_url;
+    aeJS.settings['email_format'] = AEJSWP.email_format;
+    aeJS.settings['date_format'] = AEJSWP.date_format;
+    aeJS.settings['sso'] = AEJSWP.sso_type;
+    if (AEJSWP.extra_info != '') {
+        aeJS.settings['extra_info'] = AEJSWP.extra_info;
+    }
+
+    // modify aeJS settings if validation target is set for a custom form
+    if (typeof (AEJSWP.validation_target) != 'undefined' && AEJSWP.validation_target != '') {
+        if (AEJSWP.validation_target != 'widget') {
+            var cform_id = parseInt(AEJSWP.validation_target.replace('cform-', ''));
+            AEJSWP.debugOutput('Validation Target is custom form ' + cform_id);
+            AEJSWP.applyCustomFormSettings(cform_id);
+        } else {
+            AEJSWP.debugOutput('Validation Target is widget');
+        }
+    } else {
+        // for backward compatability (existing site's won't have this new setting in their $ae_fes)
+        AEJSWP.debugOutput('Validation Target not defined, assuming widget');
+        AEJSWP.validation_target == 'widget';
+    }
+
+    // AEJSWP internal state tracking (these persist for this page request only)
+    AEJSWP.user_logging_in = false;
+    AEJSWP.ae_login_fired = false;
+    AEJSWP.custom_form_complete = false;
+
+    // mailing list form completion tracking - no user sign-in
+    // so store state in local storage to persist beyond just this browser session
+    if (!AEJSWP.getLocalStorageItem('aeswp_cform_mailing_lists_completed')) {
+        // there can be many of these, create new empty array if it doesn't exist yet
+        AEJSWP.setLocalStorageItem('aeswp_cform_mailing_lists_completed', [], true);
+    }
+    ;
+
+    // Set the aejswp_optin_choices Session Storage
+    AEJSWP.setOptinChoicesSessionStorage();
+
+    // console debug
+    AEJSWP.debugOutput('', AEJSWP);
+    AEJSWP.debugOutput('AEJSReady: ', aeJS);
+    if (AEJSWP.getLocalStorageItem('aejswp_cform_id')) {
+        AEJSWP.debugOutput('Custom Form flow still in progress');
+        AEJSWP.applyCustomFormSettings(AEJSWP.getLocalStorageItem('aejswp_cform_id'));
+    }
+
+    // finally call any custom defined startup functions
+    // (these can be used to override/extend settings & add additional event handlers)
+    for (var i = 0; i < AEJSWP.aejsready_handlers.length; i++) {
+        AEJSWP.debugOutput('Calling custom aejsready_handler : ' + AEJSWP.aejsready_handlers[i]);
+        AEJSWP.executeFunctionByName(AEJSWP.aejsready_handlers[i], window, aeJS);
+    }
+};
+
+AEJSWP.setOptinChoicesSessionStorage = function() {
+    // optin tracking - these also persist beyond user logout for good UX
+    var optin_choices = AEJSWP.getLocalStorageItem('aejswp_optin_choices', true);
+    if (!AEJSWP.getLocalStorageItem('aejswp_optin_choices')) {
+        // array key is opt-in id, value is the user choice
+        AEJSWP.setLocalStorageItem('aejswp_optin_choices', [], true);
+    } else {
+        // user has existing choices - we need to check if they change any optin choice during the flows as we only want to make backend post if they change
+        if (!AEJSWP.getSessionStorageItem('aejswp_initial_optin_choices', true)) {
+            AEJSWP.setSessionStorageItem('aejswp_initial_optin_choices', optin_choices, true);
+        }
+    }
+    if (!AEJSWP.getSessionStorageItem('aejswp_initial_optin_choices', true)) {
+        AEJSWP.setSessionStorageItem('aejswp_initial_optin_choices', [], true);
+    }
+}
+
+//
+// reload the aeJS framework - this is used on social login click handlers, before we dynamically alter aeJS.settings
+// it's workaround for a limitation of the aeJS framework -
+// in redirect mode it cannot have setting updated dynamically like we do in the applyCustomFormSettings function (it uses cached values set during the initial AEJSReady run)
+// so we reload the framework JS which allows it to init with our new settings
+//
+AEJSWP.reloadAeJSFramework = function (ae_service) {
+    // this fix only needed to fix redirect flow
+    if (!AEJSWP.aeJS.settings.auth_window) {
+        AEJSWP.debugOutput('Redirect flow, so re-loading aeJS framework to pick up changed settings');
+        var head = document.getElementsByTagName('head')[0];
+        var script = document.createElement('script');
+        script.type = 'text/javascript';
+        script.src = AEJSWP.ae_js_path;
+        head.appendChild(script);
+        AEJSWP.ae_framework_reloaded = true;		// stops re-run of AEJSReady - persists for this page request only
+        AEJSWP.auth_service_after_reload = ae_service;	// picked up in AEJSReady handler - we'll then fire off the auth flow once the new framework is ready
+    } else {
+        AEJSWP.debugOutput('Starting auth flow with provider = ' + ae_service);
+        AEJSWP.aeJS.trigger.authenticate(ae_service, 'register');
+    }
+};
+
+/**************************
+ *
+ * aeJS framework event handlers
+ * https://docs.google.com/spreadsheets/d/1agB4Phe3vvo0WWcvC-2O2HmlCHs84YTP8GQ3ip9geV8/edit#gid=0
+ *
+ */
+
+//
+// onUser handler
+// - fired when an AE user session is detected on page load
+//
+// - this will only fire if the user meets all the criteria specified by the website they are on (previous reg on this domain, required fields, verified email etc.)
+// - this means there can be an active AE session but no onUser will fire (if they don't meet validation rules)
+// - also fired before login event when in redirect flow (because it's a new page load)
+//
+// state="init"			- every page refresh, user is logged in and available for this site (meets all required fields/services etc.)
+// state="update"		- when user record is updated with a custom form
+//
+AEJSWP.userHandler = function(user, state) {
+	AEJSWP.debugOutput('userHandler: ' + state, user);
+
+	if( AEJSWP.getSessionStorageItem('aejswp_password_reset_in_progress') ) {
+
+		// don't act on this event if password reset flow in progress
+		// it will be the user coming back after the verify email step (onLogin/onUser can fire if the user is allowed to login to site)
+		// instead the verifyEmailHandler will show the enter new password screen
+		AEJSWP.debugOutput('Doing nothing, password reset flow in progress');
+
+	} else {
+
+		// if sso is disabled - ignore all onUser events, until we see an onLogin event
+		if( AEJSWP.sso_type != 'disabled' || AEJSWP.getSessionStorageItem('aejswp_ae_login_fired') ) {
+
+			if(typeof user != 'undefined' && typeof user.data != 'undefined') {
+
+				// non-framework sso handling
+				// the user may have an active AE session from another site
+				// and visit this site (not for the first time - that is picked up as a registration state in the onLogin handler)
+				// we still need to perform login actions on our site (login to WP/visual states etc.)
+				if(AEJSWP.onUserSSOLogin()) {
+					AEJSWP.debugOutput('onUser SSO attempt');
+					AEJSWP.loginHandler(user, 'login', true);
+					return;
+				}
+
+				// custom form handling
+				if( AEJSWP.getLocalStorageItem('aejswp_cform_id') ) {
+					if(state == 'init' || state == 'update') {
+						// custom from flow in progess - move to validation
+						AEJSWP.customFormValidation(user);
+					}
+					return;
+				}
+
+				// if performance settings enabled, always update logged in state
+				if(AEJSWP.disable_logged_in_session) {
+					AEJSWP.debugOutput('Logged-in session disabled in performance settings');
+					AEJSWP.ajaxUpdateState(user);
+				}
+
+				// update auth connect handlers
+				AEJSWP.authConnect(user);
+			}
+		} else {
+
+			//if not login fired but onUser event then still update authConnect handlers
+            if(typeof user != 'undefined' && typeof user.data != 'undefined') {
+                // update auth connect handlers
+                AEJSWP.authConnect(user);
+            }
+		}
+	}
+};
+
+//
+// onLogin handler
+// - fired when the user is first signed-in to AE
+// - fired when the user is first signed-in to this site's domain (via SSO)
+//
+// GOTCHAS FOR CUSTOM FORMS:
+// - can still fire state=registration if user does not meet criteria for this website (verified email, required fields etc.)
+// - will not ever fire state=login if user does not meet critera for website
+//
+//
+// state="login"					- existing user login (this site's domain in their AE user record already)
+// state="registration"		- new user login to this site (this site's domain not in their AE user record)
+// sso=true 							- this was a framework SSO registration
+//
+AEJSWP.loginHandler = function(user, state, sso) {
+	AEJSWP.debugOutput('loginHandler: ' + state + ' (sso=' + sso + ')', user);
+
+	if( AEJSWP.getSessionStorageItem('aejswp_password_reset_in_progress') ) {
+
+		// don't act on this event if password reset flow in progress
+		// it will be the user coming back after the verify email step (onLogin/onUser can fire if the user is allowed to login to site)
+		// instead the verifyEmailHandler will show the enter new password screen
+		AEJSWP.debugOutput('Doing nothing, password reset flow in progress');
+
+	} else {
+
+		// save login event
+		AEJSWP.setSessionStorageItem('aejswp_ae_login_fired', true);	// persists for entire session, used in user handler
+		AEJSWP.ae_login_fired = true;	// persists only for this page, used in custom form validation
+
+		// fire analytics events
+		// NB: we dont fire login events here - as we wait until full login handling has been done (log user into WP etc.) before firing that event
+		if(state == 'registration') {
+			AEJSWP.trackEvent('registration', user);
+		}
+		if(state == 'auth') {
+			// Auth connect handling
+			// fire accountConnect event
+			AEJSWP.trackEvent('accountConnect', user);
+			// update auth connect anchors
+			AEJSWP.authConnect(user);
+		}
+
+		// onLogin is called after onUser - custom form onUser has already done all the handling here, prevent duplicate run
+		if( ! AEJSWP.custom_form_complete ) {
+
+			// custom form handling
+			if(AEJSWP.getLocalStorageItem('aejswp_cform_id')) {
+				if(state == 'login' || state == 'registration') {
+					// do the required fields check
+					AEJSWP.customFormValidation(user);
+					return;
+				}
+			}
+
+			// widget handling
+			if(state == 'login' || state == 'registration' || (state == 'auth' && ! AEJSWP.user_logged_in) ) {
+				// log the user in
+				AEJSWP.logUserIn(user);
+			}
+		}
+	}
+};
+
+
+//
+// onFlow handler - fired at various points during the user flow
+// event.step="register"			- widget modal shown
+// event.step="authenticate"	- social provider auth shown
+//
+AEJSWP.flowHandler = function(event) {
+	AEJSWP.debugOutput('flowHandler: ', event);
+
+  if(typeof event.step != "undefined") {
+
+		if(AEJSWP.getLocalStorageItem('aejswp_cform_id')) {
+
+			//
+			// custom form handling
+			//
+
+			AEJSWP.ae_form_submit_in_progress = false; 	// we have a response back from AE - reset the flag that stops the user from duplicate form submissions (hammering the button waiting for response causes the widget modal to popup!)
+
+			var cform_id = AEJSWP.getLocalStorageItem('aejswp_cform_id');
+
+			// verify email still required
+			if(event.step == 'verify-email') {
+				AEJSWP.debugOutput('User still needs to verify their email');
+				// show verify email state and send email
+				AEJSWP.setSessionStorageItem('aejswp_verify_email_in_progress', AEJSWP.aeJS.user.data.Email);
+				AEJSWP.displayVerifyEmail(cform_id, AEJSWP.aeJS.user.data.Email);
+				if( ! AEJSWP.getSessionStorageItem('aejswp_verify_email_sent') ) {
+					// only do this once per session (so user doesn't get multiple emails if they refresh page) NB: user can still click the resend button which will work
+					AEJSWP.setSessionStorageItem('aejswp_verify_email_sent', true);
+					AEJSWP.sendVerifyEmail(AEJSWP.aeJS.user.data.Email);
+				}
+			}
+
+			// required fields missing
+			if(event.step == 'required-fields') {
+
+				if(AEJSWP.getSessionStorageItem('aejswp_password_reset_in_progress')) {
+					// in the middle of a password reset flow the AEJS user record is populated on return to the site - but we don't want to show the additional details form yet
+					// proper UX flow should be to get them to login again, so we don't do anything here
+					AEJSWP.debugOutput('User still in password reset flow - so not showing additional details form, they must login first');
+				} else {
+					// normal missing fields handling
+					AEJSWP.debugOutput('User missing required fields');
+					// mailing list form type handling - we have an AE user record (as we're in the ae flow handler), so can add the AE handler back to the current form (it may not have it if it's a mailing list form)
+					AEJSWP.addAEHandlerBackToCustomForm(AEJSWP.getLocalStorageItem('aejswp_cform_id'));
+					// we can also remove any cpatcha's on the form (user has authed so not required)
+					AEJSWP.hideCaptchaOnForm(AEJSWP.getLocalStorageItem('aejswp_cform_id'));
+					// show form
+					AEJSWP.redirectToCustomFormPage(cform_id);		// will only redirect if needed/possible
+					var missing_fields = AEJSWP.checkUserRequiredFields(cform_id, AEJSWP.aeJS.user);
+					AEJSWP.displayAdditionalDetailsForm(cform_id, missing_fields);
+					AEJSWP.updateCustomForms();	// will populate form with ae user data
+				}
+			}
+
+			// handle errors
+			if(event.step === 'error') {
+
+				// NB: errors can come in two formats depending on whether using modal or redirect flow
+				// eg: "No account exists with those credentials" or "No+account+exists+with+those+credentials"
+				// so we simply convert any pluses to spaces before doing string match
+				// NB 2: '/' also converted to '%2F' in redirect flow
+				event.error = event.error.replace(/\+/g,' ');
+				event.error = event.error.replace(/\%2F/g,'/');
+
+				// reg form errors:
+				if( event.error.includes('Email account already exists with a different password') ) {
+					// email account already exists
+					AEJSWP.debugOutput('That user already exists - please use the login form instead');
+					var form = jQuery("#ae-cform-email-reg-" + AEJSWP.getLocalStorageItem('aejswp_cform_id'));
+					if(form.length) {
+						AEJSWP.setFormError(form, AEJSWP.custom_forms[AEJSWP.getLocalStorageItem('aejswp_cform_id')]['flow_labels']['form_error_account_exists']);
+					}
+					// if we're in redirect flow, we'll need to expand the email form, so the form error is visible to the user
+					if( ! AEJSWP.aeJS.settings.auth_window ) {
+						var cform_id = AEJSWP.getLocalStorageItem('aejswp_cform_id');
+						AEJSWP.displayRegistrationForm( cform_id );
+						jQuery('#ae-cform-email-container-' + cform_id).slideToggle();
+					}
+				}
+
+				// login form errors:
+				if( event.error.includes('No account exists with those credentials') ) {
+					// incorrect email/password on login form
+					AEJSWP.debugOutput('Incorrect email and/or password');
+					var form = jQuery("#ae-cform-email-login-" + AEJSWP.getLocalStorageItem('aejswp_cform_id'));
+					if(form.length) {
+						AEJSWP.setFormError(form, AEJSWP.custom_forms[AEJSWP.getLocalStorageItem('aejswp_cform_id')]['flow_labels']['form_error_no_account']);
+					}
+					// if we're in redirect flow, we'll need to expand the email form, so the form error is visible to the user
+					if( ! AEJSWP.aeJS.settings.auth_window ) {
+						jQuery('#ae-cform-email-container-' + AEJSWP.getLocalStorageItem('aejswp_cform_id')).slideToggle();
+					}
+				}
+				if( event.error.includes('Missing required username and/or password') ) {
+					// missing email/password on login form
+					AEJSWP.debugOutput('Missing required username and/or password');
+					var form = jQuery("#ae-cform-email-login-" + AEJSWP.getLocalStorageItem('aejswp_cform_id'));
+					if(form.length) {
+						AEJSWP.setFormError(form, AEJSWP.custom_forms[AEJSWP.getLocalStorageItem('aejswp_cform_id')]['flow_labels']['form_error_no_account']);
+					}
+					// if we're in redirect flow, we'll need to expand the email form, so the form error is visible to the user
+					if( ! AEJSWP.aeJS.settings.auth_window ) {
+						jQuery('#ae-cform-email-container-' + AEJSWP.getLocalStorageItem('aejswp_cform_id')).slideToggle();
+					}
+				}
+
+				// social auth errors:
+				if( event.error.includes('authentication denied') ) {
+					// user cancelled social auth
+					// NB: no need to display error to user - they cancelled so know what's going on!
+					AEJSWP.debugOutput('Social Auth denied');
+				}
+
+				// for all errors, reset custom form state
+				//AEJSWP.clearCustomFormState();
+			}
+		} else {
+
+			//
+			// widget handling
+			//
+
+			if(event.step == 'register') {
+				AEJSWP.trackEvent('registrationModalShown', AEJSWP.widget_cta);
+			}
+			if(event.step == 'login') {
+				AEJSWP.trackEvent('loginModalShown', AEJSWP.widget_cta);
+			}
+		}
+  }
+};
+
+//
+// email verify handler - fired when the email verify is triggered or returned from
+// step="sent"
+// step="verified"
+//
+AEJSWP.emailVerifyHandler = function(step, data) {
+	AEJSWP.debugOutput('emailVerifyHandler: ' + step, data);
+
+	// this is only used in custom form flows
+	// however user may not have a session if they closed browser - we can pick up correct cform_id from URL (password_reset=cform_id)
+	if( AEJSWP.getQueryStringValue('password_reset') != '' ) {
+		AEJSWP.setSessionStorageItem('aejswp_cform_id', parseInt(AEJSWP.getQueryStringValue('password_reset')));
+	}
+	if(AEJSWP.getLocalStorageItem('aejswp_cform_id')) {
+		if(typeof step != 'undefined') {
+
+			if(step == 'sent') {
+				if(AEJSWP.getSessionStorageItem('aejswp_password_reset_in_progress')) {
+					// password reset verify email sent
+					AEJSWP.displayPasswordResetEmailSent();
+					// hide any previous error messages
+					var form = jQuery("#ae-cform-reset-password-step1-" + AEJSWP.getLocalStorageItem('aejswp_cform_id'));
+					if(form.length) {
+						AEJSWP.hideFormError(form);
+					}
+					// clear password reset state - to allow the user to abandon password reset flow if they like
+					// the return back from the verify email link will re-setup this state if the user does decide to continue
+					AEJSWP.clearPasswordResetState();
+				}
+			}
+
+			if(step == 'verified') {
+				// user now verified, the normal event handlers will log them in (if not in password reset flow)
+				AEJSWP.debugOutput('User returned after succesful email verification');
+
+				if(AEJSWP.getSessionStorageItem('aejswp_password_reset_in_progress')) {
+					AEJSWP.debugOutput('Storing verify email return data for password reset');
+					// user has completed step 1 of password reset flow (verified their email)
+					// store the returned data which will be needed when the user enters new password
+					AEJSWP.setSessionStorageItem('aejswp_password_reset_email', data.EmailAddress);
+					AEJSWP.setSessionStorageItem('aejswp_password_reset_member_service_id', data.MemberServiceID);
+					if( parseInt(AEJSWP.custom_forms[AEJSWP.getLocalStorageItem('aejswp_cform_id')]['modal_display']) == 1 ) {
+						AEJSWP.setSessionStorageItem('aejswp_password_reset_force_modal_open', true);		// we'll use this flag to force open the modal (if it's in use) after the page refresh
+					}
+					// log the user out of AE (they are logged into AE by the verify email step) - we want to ensure that our password reset flow requires them to log in
+					// (otherwise SSO mechanism will allow them in without actually resetting their password on a page refresh)
+					AEJSWP.debugOutput('Logging user out of their AE session, to stop stop SSO login on page refresh');
+					AEJSWP.aeJS.trigger.logout();
+					// redirect to this page without the password reset query string params (otherwise the password reset page will be shown repeatedly if the user refreshes page)
+					var redirect_url = AEJSWP.removeURLParameter( window.location.href, 'password_reset');
+					redirect_url = AEJSWP.removeURLParameter( redirect_url, 'step');
+					redirect_url = AEJSWP.removeURLParameter( redirect_url, 'code');
+					window.location.href = redirect_url;
+				}
+			}
+
+			if(step == 'error' && typeof data.code != 'undefined' && data.code == 169) {
+				// password reset email provided by user is invalid
+				AEJSWP.debugOutput('Users password reset email is invalid');
+				var form = jQuery("#ae-cform-reset-password-step1-" + AEJSWP.getLocalStorageItem('aejswp_cform_id'));
+				if(form.length) {
+					AEJSWP.setFormError(form, AEJSWP.custom_forms[AEJSWP.getLocalStorageItem('aejswp_cform_id')]['flow_labels']['form_error_email_not_found']);
+				}
+				// if we're in redirect flow, we'll need to expand the email form, so the form error is visible to the user
+				//if( ! AEJSWP.aeJS.settings.auth_window ) {
+				//	jQuery('#ae-cform-email-container-' + AEJSWP.getLocalStorageItem('aejswp_cform_id')).slideToggle();
+				//}
+			}
+
+		}
+	}
+};
+
+//
+// password reset handler - fired when the reset_password is triggered
+// status="ok"
+// status="error"
+//
+AEJSWP.passwordResetHandler = function(status, message) {
+	AEJSWP.debugOutput('passwordResetHandler: ' + status, message);
+
+	// this is only used in custom form flows
+	if(AEJSWP.getLocalStorageItem('aejswp_cform_id')) {
+		if(typeof status != 'undefined' && status == 'ok') {
+			// show confirm state
+			AEJSWP.displayPasswordResetSuccess();
+			// reset state
+			AEJSWP.clearPasswordResetState();
+			// log the user out of AE (the verify email flow logs the user into AE but not WP)
+			// our flow is: user changes password then required to login using new credentials
+			AEJSWP.debugOutput('Logging user out of their AE session, in readyness for a fresh login after password reset');
+			AEJSWP.aeJS.trigger.logout();
+		}
+	}
+};
+
+//
+// mobile detect handler - fired when a mobile device is detected
+// when this happens, the flow is forced to redirect
+//
+AEJSWP.mobileDetectHandler = function() {
+	AEJSWP.debugOutput('mobileDetectHandler fired');
+
+	// NB: aeJS framework forces auth_window to false, but we need to set it in advance of ae auth flow kicking off for conditional logic in the AEJSWP
+	AEJSWP.aeJS.settings['auth_window'] = false;
+};
+
+//
+// onWindow handler - fired at various points as user interacts with modal windows (both widget & social auth modals)
+//
+AEJSWP.windowHandler = function(event) {
+	AEJSWP.debugOutput('windowHandler: ', event);
+};
+
+//
+// logout handler - fired when the user is logged out
+//
+AEJSWP.logoutHandler = function(event) {
+	AEJSWP.debugOutput('logoutHandler: ', event);
+};
+
+//
+// incognito handler - handles browser config errors, fired when user clicks on widget sign in link
+//
+AEJSWP.incognitoHandler = function(event, caller) {
+
+	// if safari incognito or nocookies detected
+	if ( AEJSWP.detect_safari_incognito() || !AEJSWP.detect_cookies_enabled() ) {
+
+		// prevent the normal modal or redirection flow from occurring as we have already detected browser config issues
+		event.stopImmediatePropagation();
+
+		// show the appropriate error message in a modal
+		jQuery('body').append('<div id="ae-browser-config-error" style="display:none;">' + ( AEJSWP.detect_safari_incognito() ? AEJSWP.safari_incognito_error : AEJSWP.cookies_disabled_error ) + '</div>');
+		jQuery('#ae-browser-config-error').modal();
+
+	}
+	// no browser config errors detected
+	else {
+
+		// check where incognitoHandler was called from, do appropriate trackEvent
+		if ( caller == 'ae-widget' ) {
+			AEJSWP.trackEvent('registrationModalShown', AEJSWP.widget_cta);
+		}
+	}
+}
+
+/**************************
+ *
+ * Common Methods - leveraged by both Widget & Custom Forms
+ *
+ */
+
+//
+// Log the User in after AE login completes
+// 1) send login analytcis event
+// 2) log user into WP - if we can, dependant on performance settings
+//
+AEJSWP.logUserIn = function(user, cform_id) {
+
+	// passed if user came through a custom form login flow (used to determine if we need to do an extra redirect under performance settings conditions and pass correct optin data)
+	cform_id = cform_id || false;
+
+	// stop this running twice (the aeJS framework fires an onUser before onLogin)
+	if(!AEJSWP.user_logging_in) {
+		AEJSWP.user_logging_in = true;
+
+		AEJSWP.debugOutput('User logged in to AE, performing WP plugin follow on actions...');
+
+		// fire login analytics event (should be fired even if we can't log them into WP due to performance settings etc.)
+		AEJSWP.trackEvent('login', user);
+
+	  // dont do anything if:
+		// 		user already logged into WP OR...
+		// 		there is a return error in the query string (this can happen when the user signs into AE succesfully but cannot sign into WP for some reason)
+		var error_status = AEJSWP.getQueryStringValue('aewperror');
+		if(error_status == '') {
+			if(!AEJSWP.user_logged_in) {
+				if(AEJSWP.ajax_login) {
+					// pass any optins for cforms
+					var optins = (cform_id) ? AEJSWP.getUserOptinChoices(cform_id) : [];
+					AEJSWP.ajaxLogin(user, optins, cform_id);
+				} else {
+					// couple of cases that should stop us firing the redirectLogin:
+					// if the wp user record is disabled - instead we update logged in state via ajax and fire optins to the send_user_optins AJAX endpoint
+					// if the logged in user session is disabled AND user is in a non-custom form redirect flow - they have already been through the wp-admin redirect handler which will have created the user
+					if(AEJSWP.disable_wp_user_record) {
+						AEJSWP.debugOutput('WP user record disabled');
+						if(cform_id) {
+							// for cforms we can still fire optins if WP user record disabled
+							AEJSWP.sendUserOptins(cform_id, user['data'], AEJSWP.getUserOptinChoices(cform_id));
+						}
+						AEJSWP.ajaxUpdateState(user);
+						return;
+					}
+					if(AEJSWP.disable_logged_in_session) {
+						AEJSWP.debugOutput('Logged-in session disabled');
+						if( ! AEJSWP.aeJS.settings['auth_window'] && ! cform_id) {
+							AEJSWP.debugOutput('User has already been through redirect login handler, which will have created the WP record, doing nothing');
+							//AEJSWP.ajaxUpdateState(user);
+							return;
+						}
+					}
+
+
+                    // if we have a waiting function defined then it will wait for that event to occur before executing optins
+                    AEJSWP.maybe_wait_for_event('send_user_optins', function() {
+
+                        // all other cases need to be put through the redirectLogin - also pass any optins
+                        // NB: optins action hook will be fired during the redirect login, so fire the optinsUpdated analytics event just before redirect happens
+
+                        var optins = (cform_id) ? AEJSWP.getUserOptinChoices(cform_id) : [];
+                        var optins_changed = AEJSWP.getUserUpdatedOptins(cform_id, optins);
+                        if (optins_changed) {
+
+                            //allow other scripts to override/append to user data
+                            user.data = AEJSWP.run_filter('filter__optin_user_data', user.data);
+
+                            var data = {
+                                cform_id: cform_id,
+                                user_data: user.data,
+                                optins: optins_changed,
+                            };
+                            AEJSWP.trackEvent('optinsUpdated', data);
+                        }
+                        AEJSWP.redirectLogin(user, optins, cform_id);		// takes the original optins, PHP works out if they've changed via the usermeta table (which is a bit more robust than relying on browser session)
+                    });
+				}
+			} else {
+				// user already logged in
+				AEJSWP.debugOutput('Doing nothing, user already logged-in');
+			}
+		} else {
+			AEJSWP.debugOutput('Doing nothing, aewperror=' + error_status + ' detected in query string');
+		}
+	}
+};
+
+//
+// makes login ajax request to WP backend
+// - takes the aeJS user object
+// - also takes optins array (optional)
+// - performs necessary actions
+//
+AEJSWP.ajaxLogin = function(user, optins, cform_id) {
+	// pass user data & services if defined
+	if(typeof user.services == "undefined") {
+		user.services = [];	// not defined, pass empty array instead
+	}
+	// passed if user came through a custom form login flow
+	cform_id = cform_id || false;
+	// get current page url
+	var current_page = window.location.href
+	// remove password_reset param if present - this will be return from password_reset flow
+	current_page = AEJSWP.removeURLParameter(current_page, 'password_reset');
+
+    // if we have a waiting function defined then it will wait for that event to occur before executing optins
+    AEJSWP.maybe_wait_for_event('send_user_optins', function() {
+        //allow other scripts to override/append to user data
+        var user_data = AEJSWP.run_filter('filter__optin_user_data', user.data);
+
+        // optins
+        var optins = optins || [];
+        var post_data = {
+            action: AEJSWP.ajax_action_login,
+            data: user_data,
+            services: user.services,
+            current_page: current_page,
+            optins: optins,
+            cform_id: cform_id
+        };
+
+        if (AEJSWP.disable_wp_user_record) {
+            // don't make ajax login request (it will just fail anyway)
+            AEJSWP.debugOutput('WP user record disabled, not making AJAX request to login');
+            if (cform_id) {
+                // but for cforms we can still fire optins if WP user record disabled
+                AEJSWP.sendUserOptins(cform_id, user_data, AEJSWP.getUserOptinChoices(cform_id));
+
+            }
+            if (AEJSWP.login_redirect_url != '') {
+                AEJSWP.debugOutput('Post login redirect specified, redirecting to: ' + AEJSWP.login_redirect_url);
+                window.location.href = AEJSWP.login_redirect_url;
+            } else {
+                AEJSWP.debugOutput('Updating state via AJAX');
+                AEJSWP.ajaxUpdateState(user);
+            }
+        } else {
+            AEJSWP.debugOutput('WP Login AJAX request : ', post_data);
+            jQuery.post(AEJSWP.ajaxurl, post_data, function (response) {
+                try {
+                    // handle response
+                    response = jQuery.parseJSON(response);
+                    if (response.status == 0) {
+                        //
+                        // signin fail
+                        //
+                        // if reason is duplicate email/username output a JS alert to let admin know
+                        if (response.fail_status == 6) {
+                            response.message = response.message.replace(new RegExp('<br/>', 'g'), '\n');	// change <br/> to newlines for JS alert
+                            alert(response.message);
+                        }
+                        // output response to console regardless of debug setting to facilitate debugging on production servers
+                        console.log('AEJSWP Error: WP Login AJAX response : ', response);
+                    } else {
+                        //
+                        // signin success
+                        //
+                        AEJSWP.debugOutput('WP Login AJAX response : ', response);
+                        // opt-ins action hook will have been called at this point, fire the optinsUpdated analytics event
+                        var optins_changed = AEJSWP.getUserUpdatedOptins(cform_id, optins);
+                        if (optins_changed) {
+                            var data = {
+                                cform_id: cform_id,
+                                user_data: user.data,
+                                optins: optins_changed,
+                            };
+                            AEJSWP.trackEvent('optinsUpdated', data);
+                        }
+                        if (AEJSWP.login_redirect_url != '') {
+                            AEJSWP.debugOutput('Post login redirect specified, redirecting to: ' + AEJSWP.login_redirect_url);
+                            window.location.href = AEJSWP.login_redirect_url;
+                        } else {
+                            AEJSWP.debugOutput('Updating state via AJAX');
+                            AEJSWP.ajaxUpdateState(user);
+                            // if WP user session is available we must also set their logged_in_status & get an updated logout URL
+                            if (!AEJSWP.disable_logged_in_session) {
+                                AEJSWP.debugOutput('Setting user_logged_in to true & making AJAX request to get an updated logout URL');
+                                AEJSWP.user_logged_in = true;
+                                AEJSWP.getLogoutURL();
+                            }
+                            // and update auth connect anchors
+                            AEJSWP.authConnect(user);
+                        }
+                    }
+                } catch (e) {
+                    // uncontrolled error - output response to console regardless of debug setting to facilitate debugging on production servers
+                    console.log('AEJSWP Error: WP Login AJAX response : ', response);
+                }
+            });
+        }
+    }); //end of send user optin event
+};
+
+//
+// makes redirect login request to WP backend, takes:
+// - the aeJS user object
+// - optins array (optional)
+// - cform_id (optional)
+//
+// if block_login_redirect is not set, redirects to wp-admin redirect handler endpoint
+// otherwise holds redirect handler endpoint value until later
+//
+AEJSWP.redirectLogin = function(user, optins, cform_id) {
+	var access_token = user.data['AccessToken'];
+	// encode optins
+	var optins = optins || [];
+	var encoded_optins = encodeURIComponent(JSON.stringify(optins));
+	// get current url
+	var current_url = window.location.href;
+	// but remove accessToken if it exists - this will be a return from a custom form flow - we don't need it, we already have the access token
+	current_url = AEJSWP.removeURLParameter(current_url, 'accessToken');
+	// also remove password_reset param if present - this will be return from password_reset flow - again not needed
+	current_url = AEJSWP.removeURLParameter(current_url, 'password_reset');
+	// return to current page or the login_redirect_url aftet redirect login
+	var return_url = (AEJSWP.login_redirect_url != '') ? AEJSWP.login_redirect_url : current_url;
+
+	//allow external scripts to override the return_url
+    return_url = AEJSWP.run_filter('filter__redirect_login_return_url', return_url);
+
+    //url encode the return url so it stays as a query value in the main URL
+	return_url = encodeURIComponent(return_url);
+
+	// redirect to WP ajax login handler
+	var redirect_url = AEJSWP.ajaxurl + '?action=' + AEJSWP.redirect_action_login + '&accessToken=' + access_token + '&optins=' + encoded_optins + '&cform_id=' + cform_id + '&return_url=' + return_url;
+	if (typeof AEJSWP.custom_forms[cform_id] != 'undefined' && typeof AEJSWP.custom_forms[cform_id]['block_login_redirect'] != 'undefined' && AEJSWP.custom_forms[cform_id]['block_login_redirect']) {
+		AEJSWP.debugOutput('Blocked Redirect Login, holding redirect URL: ' + redirect_url);
+		AEJSWP.paused_redirect_url = redirect_url;
+	} else {
+		AEJSWP.debugOutput('Redirect Login, redirecting to: ' + redirect_url);
+		window.location.href = redirect_url;
+	}
+};
+
+//
+// makes a WP admin ajax request to get a new logout URL
+// this is needed for non-page refresh flows - a WP logout URL needs a valid nonce to work
+//
+AEJSWP.getLogoutURL = function() {
+	var post_data = {
+		action: AEJSWP.ajax_action_get_logout_url,
+		return_url: window.location.href
+	};
+	AEJSWP.debugOutput('WP get_logout_url AJAX request', post_data);
+	jQuery.post(AEJSWP.ajaxurl, post_data, function( response ) {
+		// NB: not a critical function this one - no extended error handling (user can still logout - will get a warning if before a page refresh OR it'll be seamless if they have refreshed)
+		AEJSWP.debugOutput('WP get_logout_url AJAX response : ', response);
+		response = jQuery.parseJSON( response );
+		if( response.wp_logout_url != '' ) {
+			AEJSWP.wp_logout_url = response.wp_logout_url;
+		}
+	});
+};
+
+//
+// onUser SSO login check
+// returns true if we should try & log user in, false if not
+// NB: should be only called from onUser
+//
+AEJSWP.onUserSSOLogin = function() {
+	// if SSO settings are enabled
+	// & the user in not yet logged into this site
+	// & they haven't already previously tried to SSO this browser session
+	// we can say this is an sso login attempt
+	var sso_attempted = AEJSWP.getSessionStorageItem('aewpjs_sso_attempted');
+	if(AEJSWP.sso_type != 'disabled' && !AEJSWP.user_logged_in && !sso_attempted) {
+		// first lets check we don't have an error return from a previous try (otherwise we could get into an infinite loop: AE onUser fires on page load & redirects to login handler, redirects back to page with WP error but onUser still fires on page load again, which would redirect to login handler...)
+		var error_status = AEJSWP.getQueryStringValue('aewperror');
+		if(error_status == '') {
+			// ok, this is an sso login
+			AEJSWP.setSessionStorageItem('aewpjs_sso_attempted', true);	// add flag to this browser session so we don't keep trying to SSO them (will get annoying!)
+			return true;
+		} else {
+			AEJSWP.debugOutput('onUser SSO login attempt failed, WP returned error: ' + AEJSWP.login_fail_status_messages[error_status]);
+		}
+	}
+	return false;
+};
+
+//
+// updates logged-in state using the aeJS object
+// - takes aeJS user object
+// - updates widget, authenticator & custom form containers
+//
+AEJSWP.ajaxUpdateState = function(user) {
+	if(typeof user.data != "undefined") {
+		// have users data
+		AEJSWP.debugOutput('Updating logged in state without page refresh, using the aeJS user object');
+		//update auth connect anchors
+		AEJSWP.authConnect(user);
+		// iterate over all containers
+		jQuery('.' + AEJSWP.ajax_update_class).each(function(i, obj) {
+			// get shortcode attributes from the div data attributes
+			var no_salutation = jQuery(this).data('aewp-no-salutation');
+			var no_profile_link = jQuery(this).data('aewp-no-profile-link');
+			var no_logout_link = jQuery(this).data('aewp-no-logout-link');
+			// print logged in widget state
+			var widget_html = '';
+			if(!no_salutation) {
+				widget_html += '<span class="ae-wp-salutation">';
+				widget_html += AEJSWP.logged_in_salutation.replace('{USERNAME}', user.data['Username']);	// replace {USERNAME} token
+				widget_html += '</span>';
+			}
+			if(!no_profile_link) {
+				widget_html += '<span class="ae-wp-profile-link">';
+				widget_html += '<a href="' + AEJSWP.profile_link_url + '">' + AEJSWP.profile_link.replace('{USERNAME}', user.data['Username']) + '</a>';
+				widget_html += '</span>';
+			}
+			if(!no_logout_link) {
+				widget_html += '<span class="ae-wp-logout-link">';
+				widget_html += '<a class="ae-wp-logout-anchor" href="#" onclick="AEJSWP.logout();">' + AEJSWP.logout_link + '</a>';
+				widget_html += '</span>';
+			}
+			jQuery(this).html(widget_html);
+		});
+	}
+};
+
+//
+// check for sign-in errors in query string and display message to user (run on doc load)
+//
+AEJSWP.redirectFlowSigninErrorCheck = function() {
+  var error_status = AEJSWP.getQueryStringValue('aewperror');
+	if(error_status == 6) {
+    // signin fail, if reason is duplicate email/username output a JS alert to let admin know
+    var error_previously_displayed = false;
+    if(typeof(Storage) !== 'undefined') {
+      if(AEJSWP.getSessionStorageItem('aewpjs_login_error_status_6_displayed')) {
+        error_previously_displayed = AEJSWP.getSessionStorageItem('aewpjs_login_error_status_6_displayed');
+      }
+    }
+    if(!error_previously_displayed) {
+      // display error
+      if(typeof(Storage) !== 'undefined') {
+        // drop a flag in session storage so we don't show again as user interacts with site
+        // & also drop the sso_attempted flag so that SSO mechanism doesn't run either (saves an unecessary server side round trip)
+        error_previously_displayed = AEJSWP.setSessionStorageItem('aewpjs_login_error_status_6_displayed', true);
+        sso_attempted = AEJSWP.setSessionStorageItem('aewpjs_sso_attempted', true);
+      }
+      var message = AEJSWP.login_fail_status_messages[6].replace(new RegExp('<br/>', 'g'), '\n');	// change <br/> to newlines for JS alert
+      alert(message);
+    }
+	}
+};
+
+//
+// updates auth connect anchors when user has authenticated their account to an additional service
+//
+AEJSWP.authConnect = function(user) {
+  if(typeof(user) != "undefined" && typeof(user.data) != 'undefined') {
+    AEJSWP.debugOutput('Updating Auth Connect anchors: ', user);
+    //iterate through the auth connect containers
+    jQuery('.ae-wp-auth-connect-container').each(function(i, obj) {
+      var container_auth_anchor = jQuery(".ae-wp-authenticator-anchor", jQuery(this));
+      var container_provider_reg_link = container_auth_anchor.attr("data-ae-register-link");
+      var container_provider_log_link = container_auth_anchor.attr("data-ae-login-link");
+      var container_provider_auth_link = typeof container_auth_anchor.attr("ae-wp-connect-provider") !== 'undefined' ? container_auth_anchor.attr("ae-wp-connect-provider") : container_auth_anchor.attr("ae-wp-provider");
+      var container_provider = null;
+      var data_link = '';
+      //determine the provider used in the container - this is specified by one of the above data-ae links
+      if (typeof container_provider_reg_link !== typeof undefined && container_provider_reg_link !== false) {
+        container_provider = container_provider_reg_link;
+        data_link = 'data-ae-register-link';
+      } else if(typeof container_provider_log_link !== typeof undefined && container_provider_log_link !== false) {
+        container_provider = container_provider_log_link;
+        data_link = 'data-ae-login-link';
+      } else if(typeof container_provider_auth_link !== typeof undefined && container_provider_auth_link !== false) {
+        container_provider = container_provider_auth_link;
+      }
+      if(container_provider) {
+        //check if user has already authenticated against the provider
+        if(AEJSWP.providerExistsInServices(user.services, container_provider)) {
+          jQuery(this).trigger('ae-wp-auth-connected');
+          jQuery(this).addClass('ae-wp-auth-connected');
+          if(AEJSWP.auth_connected.length > 0) {
+            var widget_html = '<span class="ae-wp-auth-connected-message">';
+            widget_html += AEJSWP.auth_connected;
+            widget_html += '</span>';
+            jQuery(this).html(widget_html);
+          }
+        } else if(data_link !== '') {
+          //if not already authenticated against the provider and the link is still in register/login mode then change to auth-connect link
+          container_auth_anchor.removeAttr(data_link);
+          container_auth_anchor.attr('ae-wp-connect-provider', container_provider);
+        }
+      }
+    });
+  }
+};
+
+//
+// add click handler to .ae-wp-authenticator-anchor's
+//
+AEJSWP.addAuthenticatorClickHandler = function() {
+  jQuery(".ae-wp-authenticator-anchor").click(function(e) {
+		e.preventDefault();
+		var return_url = AEJSWP.aeJS.settings['return_url'];
+		//check if a disable user login hook has been set
+		var disable_login_hook = jQuery(this).hasClass('ae-disabled-login-hook');
+		if(disable_login_hook) {
+		return_url = return_url + "&disable-login-hook=true";
+		AEJSWP.aeJS.settings['return_url'] = return_url;
+		AEJSWP.login_redirect_url = return_url;
+		AEJSWP.debugOutput('AE Auth Connect Triggered. Login hook has been disabled. Return URL:', return_url);
+		}
+		var auth_provider = jQuery(this).attr('ae-wp-connect-provider');
+			var auth_type = 'auth';
+			if( jQuery.isEmptyObject(AEJSWP.aeJS.user)) {
+				// user not logged in to AE, change the auth type to register, so they get logged in
+				auth_type = 'register';
+			}
+			AEJSWP.debugOutput('Authenticator anchor clicked, auth_type = ' + auth_type);
+		if(typeof auth_provider !== "undefined" && auth_provider !== false) {
+		// add query string param the aeJS.settings.return_url
+		// for telling WP that this is an additional auth connection and not login
+		return_url = return_url + "&auth-connect=true";
+		AEJSWP.debugOutput('AE Auth Connect Triggered. Return URL:', return_url);
+		AEJSWP.aeJS.settings['return_url'] = return_url;
+
+		AEJSWP.aeJS.trigger.authenticate(auth_provider, auth_type);
+		} else {
+		auth_provider = jQuery(this).attr('ae-wp-provider');
+		if(typeof auth_provider == 'undefined') {
+			auth_provider = jQuery(this).attr('data-ae-register-link');
+		}
+		if(typeof auth_provider == 'undefined') {
+			auth_provider = jQuery(this).attr('data-ae-login-link');
+		}
+		AEJSWP.aeJS.trigger.authenticate(auth_provider, auth_type);
+		}
+  });
+};
+
+//
+// Analytics event tracking
+// type: event method
+// data: object containing any data needed to pass to the event (varies by event type)
+//
+AEJSWP.trackEvent = function(type, data) {
+	switch(type) {
+
+		case 'loginModalShown':
+			// data	 - call to action string
+			AEJSWP.debugOutput('Firing loginModalShown event with data: ', String(data));
+			AEJSWP.executeFunctionByName(AEJSWP.analytics_tracking_delegate + '.loginModalShown', window, String(data));
+			break;
+
+		case 'registrationModalShown':
+			// data	 - call to action string
+			AEJSWP.debugOutput('Firing registrationModalShown event with data: ', String(data));
+			AEJSWP.executeFunctionByName(AEJSWP.analytics_tracking_delegate + '.registrationModalShown', window, String(data));
+			break;
+
+		case 'login':
+			// data		- ae user object
+			var user = data;
+		  var last_used_service = AEJSWP.getLastLoginService(user.services);
+		  var analytics_data = {
+		    service_name: last_used_service.Service,
+		    service_user_id: last_used_service.ID,
+		    ae_user_id: user.data.ID,
+				ae_user_data: user
+		  };
+			AEJSWP.debugOutput('Firing login event with data: ', analytics_data);
+			AEJSWP.executeFunctionByName(AEJSWP.analytics_tracking_delegate + '.login', window, analytics_data);
+			break;
+
+		case 'registration':
+			// data		- ae user object
+			var user = data;
+		  var last_used_service = AEJSWP.getLastLoginService(user.services);
+		  var analytics_data = {
+		    service_name: last_used_service.Service,
+		    service_user_id: last_used_service.ID,
+		    ae_user_id: user.data.ID,
+				ae_user_data: user
+		  };
+			AEJSWP.debugOutput('Firing registration event with data: ', analytics_data);
+			AEJSWP.executeFunctionByName(AEJSWP.analytics_tracking_delegate + '.registration', window, analytics_data);
+			break;
+
+		case 'formErrors':
+			// data.form_errors		- array of errors
+			// data.form_type			- 'registration', 'login' or 'mailinglist'
+			AEJSWP.debugOutput('Firing formErrors event with data: ', data);
+			AEJSWP.executeFunctionByName(AEJSWP.analytics_tracking_delegate + '.formErrors', window, data);
+			break;
+
+		case 'accountConnect':
+			// data		- ae user object
+			var user = data;
+			var last_used_service = AEJSWP.getLastLoginService(user.services);
+			var analytics_data = {
+				service_name: last_used_service.Service,
+				service_user_id: last_used_service.ID,
+				ae_user_id: user.data.ID,
+				ae_user_data: user
+			};
+			AEJSWP.debugOutput('Firing accountConnect event with data: ', analytics_data);
+			AEJSWP.executeFunctionByName(AEJSWP.analytics_tracking_delegate + '.accountConnect', window, analytics_data);
+			break;
+
+		case 'optinsUpdated':
+			// data.cform_id
+			// data.user_data
+			// data.optins
+			AEJSWP.debugOutput('Firing optinsUpdated event with data: ', data);
+			AEJSWP.executeFunctionByName(AEJSWP.analytics_tracking_delegate + '.optinsUpdated', window, data);
+			break;
+	}
+};
+// helper function for formErrors event
+// type - 'registration', 'login' or 'mailinglist'
+// form_errors - array of error messages show to user
+AEJSWP.fireFormErrorsEvent = function(type, form_errors) {
+	if(type != 'registration' && type != 'login' && type != 'mailinglist') {
+		type = 'login';		// default to login
+	}
+	var data = {};
+	data.form_errors = form_errors;
+	data.form_type = type;
+	AEJSWP.trackEvent('formErrors', data);
+};
+// Check for Safari private browsing/incognito mode. localStorage is not supported in this mode.
+// First we check that the browser is Safari, then we test if it's possible to set some localStorage
+AEJSWP.detect_safari_incognito = function() {
+
+	// userAgent based Safari detection
+	var chrome = navigator.userAgent.indexOf('Chrome') > -1;
+	var safari = navigator.userAgent.indexOf('Safari') > -1;
+	if ( safari && !chrome ) {
+
+		try {
+		  // try to use localStorage
+			var x = 'aejswp_test_item';
+			localStorage.setItem(x, x);
+	    localStorage.removeItem(x);
+
+		} catch (e) {
+			// error
+			return true;
+		}
+	}
+	return false;
+};
+// Check if cookies are enabled.
+//
+AEJSWP.detect_cookies_enabled = function() {
+
+	// check navigator.cookieEnabled for false case
+	if ( !navigator.cookieEnabled ) {
+		return false;
+	}
+
+	// make a test cookie
+	document.cookie = "aejswp_test_cookie=1";
+
+	// check if we can read the cookie
+	var cookies_enabled = document.cookie.indexOf("aejswp_test_cookie=") !== -1;
+
+	// delete cookie
+	document.cookie = "aejswp_test_cookie=; expires=Thu, 01 Jan 1970 00:00:00 UTC";
+
+	return cookies_enabled;
+};
+
+// Display a warning about browser setups
+//
+// type = safari_incognito, cookies_disbled
+AEJSWP.display_browser_config_error = function(type) {
+	var error_div_class = '';
+	var error_message = '';
+	switch(type) {
+		case 'safari_incognito':
+			error_div_class = 'ae-cform-safari-incognito-error';
+			error_message = AEJSWP.safari_incognito_error;
+			break;
+		case 'cookies_disabled':
+			error_div_class = 'ae-cform-cookies-disabled-error';
+			error_message = AEJSWP.cookies_disabled_error;
+			break;
+	}
+	// overlay warning message over sign in form
+	if( jQuery( '.ae-cform-modal-container' ).length > 0 ) {
+		// using custom form in modal - target the modal container
+		jQuery( '.ae-cform-modal-container' ).css( "position", "relative" );
+		jQuery( '.ae-cform-modal-container, .ae-modal' ).prepend( '<div class="' + error_div_class + '" style="display:none;"><p><span><span>' + error_message + '</span></span></p></div>' );
+	} else {
+		// using normal form or widget
+		// add position:relative; to .ae-cform-signin-options-list
+		jQuery( '.ae-cform-container' ).css( "position", "relative" );
+		jQuery( '.ae-cform-container, .ae-modal' ).prepend( '<div class="' + error_div_class + '"  style="display:none;"><p><span><span>' + error_message + '</span></span></p></div>' );
+	}
+	if ( jQuery( '.ae-cform-container' ).length > 0 && jQuery( '.ae-cform-container' ).height() < 200 ) {
+		// this accounts for very small custom forms
+		jQuery( '.' + error_div_class + ' p span span' ).css('font-size', '0.85em');
+	}
+	// pragmatic fix: this 1ms delay stops a FOUC (something to do with top:0 left:0 that's needed on the error div, but couldn't nail it down)
+	setTimeout(function() {
+		jQuery( '.' + error_div_class ).show();
+	}, 1);
+};
+
+/**
+ * Update font colors based on background color
+ *  (i.e. ensure they are visible)
+ *
+ * @param element
+ */
+AEJSWP.setAutoColors = function(element) {
+    if(typeof element !== "undefined" && element.length) {
+
+        //if there are multiple elements then run this function recursively
+        if(element.length > 1) {
+            jQuery(element).each(function() {
+                AEJSWP.setAutoColors(jQuery(this));
+            });
+        } else {
+            //work out the current link brightness
+            var foregroundBrightness = AEJSWP.getBrightnessLevel(element, 'color');
+            var backgroundBrightness = AEJSWP.getBrightnessLevel(jQuery(element).parent(), 'background-color');
+
+            var isBackgroundBright = backgroundBrightness > 120;
+            var isForegroundBright = foregroundBrightness > 120;
+
+            //set link color to white or black to match background brightness
+            if(isBackgroundBright && isForegroundBright) {
+                jQuery(element).css('color', 'black');
+            } else if(!isBackgroundBright && !isForegroundBright) {
+                jQuery(element).css('color', 'white');
+            }
+        }
+
+    }
+};
+
+/**************************
+ *
+ * Helper Methods
+ *
+ */
+
+//
+// output messages to console if debug setting on
+//
+AEJSWP.debugOutput = function(message, object) {
+	if(AEJSWP.debug) {
+		if(typeof(object) != 'undefined') {
+			console.log('AEJSWP: ' + message, object);
+		} else {
+			console.log('AEJSWP: ' + message);
+		}
+	}
+};
+AEJSWP.debugOutput('AE Connect console logging enabled, disable debug in plugin settings to remove this output.');
+AEJSWP.debugOutput('Settings cached with plugin version: ' + AEJSWP.plugin_version);
+
+//
+// get query string value
+//
+AEJSWP.getQueryStringValue = function(key) {
+	return unescape(window.location.search.replace(new RegExp("^(?:.*[&\\?]" + escape(key).replace(/[\.\+\*]/g, "\\$&") + "(?:\\=([^&]*))?)?.*$", "i"), "$1"));
+};
+
+//
+// safely remove a query string parameter while preserving any that might be there (WP has many ways of handling permalinks)
+// taken from: http://stackoverflow.com/questions/1634748/how-can-i-delete-a-query-string-parameter-in-javascript
+//
+AEJSWP.removeURLParameter = function(url, parameter) {
+    //prefer to use l.search if you have a location/link object
+    var urlparts= url.split('?');
+    if (urlparts.length>=2) {
+      var prefix= encodeURIComponent(parameter)+'=';
+      var pars= urlparts[1].split(/[&;]/g);
+      //reverse iteration as may be destructive
+      for (var i= pars.length; i-- > 0;) {
+      	//idiom for string.startsWith
+      	if (pars[i].lastIndexOf(prefix, 0) !== -1) {
+        	pars.splice(i, 1);
+        }
+      }
+      url= urlparts[0] + (pars.length > 0 ? '?' + pars.join('&') : '');
+      return url;
+    } else {
+      return url;
+    }
+}
+
+//
+// safely add a query string param (accounts for query string already present/not present & hashes etc.)
+// taken from: http://stackoverflow.com/questions/5999118/add-or-update-query-string-parameter
+//
+AEJSWP.addURLParameter = function(uri, key, val) {
+  return uri.replace(new RegExp("([?&]"+key+"(?=[=&#]|$)[^#&]*|(?=#|$))"), "&"+key+"="+encodeURIComponent(val)).replace(/^([^?&]+)&/, "$1?");
+};
+
+//
+// execute a function by name (handles namespaced function names, eg "My.Namespace.functionName")
+//
+AEJSWP.executeFunctionByName = function(functionName, context /*, args */) {
+	var args = Array.prototype.slice.call(arguments, 2);
+  var namespaces = functionName.split(".");
+  var func = namespaces.pop();
+	for (var i = 0; i < namespaces.length; i++) {
+		if(typeof context != "undefined") {
+	  		context = context[namespaces[i]];
+		} else {
+				return false;
+		}
+	}
+	if(typeof context != "undefined" && typeof context[func] != "undefined") {
+		return context[func].apply(context, args);
+	}
+	return false;
+};
+
+//
+// set/get/remove browser session storage items
+// these persist until browser closed (not the tab)
+// json_stringify = true, allows complex types to be stored
+//
+AEJSWP.setSessionStorageItem = function(item, value, json_stringify) {
+	try {
+		if (typeof json_stringify === 'undefined') { json_stringify = false; }
+		if(typeof(Storage) !== 'undefined') {
+			if(json_stringify) {
+				sessionStorage.setItem(item, JSON.stringify(value));
+			} else {
+				sessionStorage.setItem(item, value);
+			}
+			return true;
+		}
+		return false;
+	}
+	catch(e) {
+		return false;
+	}
+};
+// NB careful when evaluating booleans returned from localStorage! http://stackoverflow.com/questions/3263161/cannot-set-boolean-values-in-localstorage
+// this forces strings 'true' & 'false' to be returned as booleans
+// json_parse = true, to retrieve stored complex types
+AEJSWP.getSessionStorageItem = function(item, json_parse) {
+	try {
+		if (typeof json_parse === 'undefined') { json_parse = false; }
+		if(typeof(Storage) !== 'undefined') {
+			// assume strings 'true' & 'false' are boolean values
+			var value = sessionStorage.getItem(item);
+			value = (value == 'true') ? true : value;
+			value = (value == 'false') ? false : value;
+			if(json_parse) {
+				value = JSON.parse(value);
+			}
+			return value;
+		}
+		return false;
+	}
+	catch(e) {
+		return false;
+	}
+};
+AEJSWP.removeSessionStorageItem = function(item) {
+	try {
+		if(typeof(Storage) !== 'undefined') {
+			sessionStorage.removeItem(item);
+			return true;
+		}
+		return false;
+	}
+	catch(e) {
+		return false;
+	}
+};
+
+//
+// set/get/remove browser local storage items
+// these persist until the user clears them - not often!
+// json_stringify = true, allows complex types to be stored
+//
+AEJSWP.setLocalStorageItem = function(item, value, json_stringify) {
+	try {
+		if (typeof json_stringify === 'undefined') { json_stringify = false; }
+		if(typeof(Storage) !== 'undefined') {
+			if(json_stringify) {
+				localStorage.setItem(item, JSON.stringify(value));
+			} else {
+				localStorage.setItem(item, value);
+			}
+			return true;
+		}
+		return false;
+	}
+	catch(e) {
+		return false;
+	}
+};
+// this forces strings 'true' & 'false' to be returned as booleans
+// json_parse = true, to retrieve stored complex types
+AEJSWP.getLocalStorageItem = function(item, json_parse) {
+	try {
+		if (typeof json_parse === 'undefined') { json_parse = false; }
+		if(typeof(Storage) !== 'undefined') {
+			// assume strings 'true' & 'false' are boolean values
+			var value = localStorage.getItem(item);
+			value = (value == 'true') ? true : value;
+			value = (value == 'false') ? false : value;
+			if(json_parse) {
+				value = JSON.parse(value);
+			}
+			return value;
+		}
+		return false;
+	}
+	catch(e) {
+		return false;
+	}
+};
+AEJSWP.removeLocalStorageItem = function(item) {
+	try {
+		if(typeof(Storage) !== 'undefined') {
+			localStorage.removeItem(item);
+			return true;
+		}
+		return false;
+	}
+	catch(e) {
+		return false;
+	}
+};
+
+//
+// check if a provider exists in the users services node
+//
+AEJSWP.providerExistsInServices = function(services, provider) {
+  for(var i in services) {
+    var service = services[i];
+    if(typeof service.Service != "undefined" && service.Service == provider) {
+      return true;
+    }
+  }
+  return false;
+};
+
+//
+// get last login service
+//
+AEJSWP.getLastLoginService = function(services) {
+	var most_recent_service = {};
+	var most_recent_timestamp = "2000-01-01 00:00:00";	// any will be later than this
+	for(var i in services) {
+		var service = services[i];
+		if(typeof service.Service != "undefined" && service.LastLogin != "undefined") {
+			if(service.LastLogin > most_recent_timestamp) {
+				most_recent_service = service;
+				most_recent_timestamp = service.LastLogin;
+			}
+		}
+	}
+	return most_recent_service;
+};
+
+//
+//add leading zero (0) to value
+//
+AEJSWP.padString = function(str, max) {
+	str = str.toString();
+	return str.length < max ? AEJSWP.padString("0" + str, max) : str;
+};
+
+//
+// check for verified email in AE record
+// returns true if AE user recod found and VerifiedEmail not empty
+// otherwise returns false
+//
+AEJSWP.userHasVerifiedEmail = function() {
+	return (typeof AEJSWP.aeJS.user.data != 'undefined' && typeof AEJSWP.aeJS.user.data.VerifiedEmail != 'undefined' && AEJSWP.aeJS.user.data.VerifiedEmail != '');
+};
+
+//
+// used on logout
+//
+AEJSWP.clearSessionStorage = function() {
+	AEJSWP.debugOutput('Clearing all session storage');
+	// clear other session states
+	AEJSWP.removeSessionStorageItem('aejswp_ae_login_fired');
+	AEJSWP.removeSessionStorageItem('aejswp_initial_optin_choices');
+	AEJSWP.removeSessionStorageItem('aewpjs_login_error_status_6_displayed');
+	AEJSWP.removeSessionStorageItem('aewpjs_sso_attempted');
+	// clear any custom form session states
+	AEJSWP.clearCustomFormState(true);
+};
+
+/**
+ * Get brightness level of a given element font or background color
+ *
+ * 0 = lowest level (i.e. black), 255 = highest level (i.e. white)
+ *
+ * @param element
+ * @param property (color or background-color)
+ * @returns {number}
+ */
+AEJSWP.getBrightnessLevel = function(element, property) {
+
+	//if element contains background image then return false
+	var elementBackgroundImg = jQuery(element).css('background-image');
+	if(typeof elementBackgroundImg !== 'undefined' && elementBackgroundImg.length && elementBackgroundImg !== "none") {
+		return false;
+	}
+
+	var elementColor = jQuery(element).css(property);
+	if(typeof elementColor !== 'undefined') {
+
+		//get array of rgb/a values
+		var colors = AEJSWP.getRgbValues(elementColor);
+
+		if( colors ) {
+			//check if opacity is defined - zero opacity means background is transparent
+			if(typeof colors.opacity !== 'undefined') {
+				var opacity = parseFloat(colors.opacity);
+				if(opacity === 0) {
+					//check if we are checking background color, if that is the case then get background
+					//brightness of parent instead
+					if(property === 'background-color') {
+						var parent = jQuery(element).parent();
+						if(parent && parent.length) {
+							return AEJSWP.getBrightnessLevel(parent, property)
+						}
+					}
+					//opacity is zero so return highest brightness level
+					return 255;
+				}
+			}
+
+			//contrast calculation based on W3C https://www.w3.org/TR/AERT/#color-contrast
+			var brightness = Math.round(((parseInt(colors.red) * 299) +
+				(parseInt(colors.green) * 587) +
+				(parseInt(colors.blue) * 114)) / 1000);
+
+			return brightness;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Convert rgb/rgba string into array of values
+ *
+ * @param color
+ *
+ * @return array|false
+ */
+AEJSWP.getRgbValues = function(color) {
+
+	var match = color.match(/rgba?\((\d{1,3}), ?(\d{1,3}), ?(\d{1,3})\)?(?:, ?(\d(?:\.?\d?))\))?/);
+
+	return match ? {
+		red: match[1],
+		green: match[2],
+		blue: match[3],
+		opacity: match[4]
+	} : false;
+}
+
+///////////////////////////////////////////////
+// the following functions used for development testing only
+//
+AEJSWP.getCurrentState = function() {
+	AEJSWP.debugOutput('CURRENT STATE >>');
+	// primary objects
+	AEJSWP.debugOutput('', AEJSWP);
+	AEJSWP.debugOutput('aeJS', AEJSWP.aeJS);
+	AEJSWP.debugOutput('user', AEJSWP.aeJS.user);
+	// session storage items
+	AEJSWP.debugOutput('SessionStorage: aejswp_cform_id', AEJSWP.getLocalStorageItem('aejswp_cform_id'));
+	AEJSWP.debugOutput('SessionStorage: aejswp_cform_prev_return_url', AEJSWP.getSessionStorageItem('aejswp_cform_prev_return_url'));
+	AEJSWP.debugOutput('SessionStorage: aejswp_cform_prev_auth_window', AEJSWP.getSessionStorageItem('aejswp_cform_prev_auth_window'));
+	AEJSWP.debugOutput('SessionStorage: aejswp_cform_prev_extra_fields', AEJSWP.getSessionStorageItem('aejswp_cform_prev_extra_fields'), true);
+	AEJSWP.debugOutput('SessionStorage: aejswp_ae_login_fired', AEJSWP.getSessionStorageItem('aejswp_ae_login_fired'));
+	AEJSWP.debugOutput('SessionStorage: aejswp_verify_email_in_progress', AEJSWP.getSessionStorageItem('aejswp_verify_email_in_progress'));
+	AEJSWP.debugOutput('SessionStorage: aejswp_verify_email_sent', AEJSWP.getSessionStorageItem('aejswp_verify_email_sent'));
+	AEJSWP.debugOutput('SessionStorage: aejswp_password_reset_in_progress', AEJSWP.getSessionStorageItem('aejswp_password_reset_in_progress'));
+	AEJSWP.debugOutput('SessionStorage: aejswp_password_reset_email', AEJSWP.getSessionStorageItem('aejswp_password_reset_email'));
+	AEJSWP.debugOutput('SessionStorage: aejswp_password_reset_member_service_id', AEJSWP.getSessionStorageItem('aejswp_password_reset_member_service_id'));
+	AEJSWP.debugOutput('SessionStorage: aejswp_password_reset_force_modal_open', AEJSWP.getSessionStorageItem('aejswp_password_reset_force_modal_open'));
+	AEJSWP.debugOutput('SessionStorage: aejswp_user_casl_in_progress', AEJSWP.getSessionStorageItem('aejswp_user_casl_in_progress', true));
+	AEJSWP.debugOutput('SessionStorage: aejswp_initial_optin_choices', AEJSWP.getSessionStorageItem('aejswp_initial_optin_choices', true));
+	AEJSWP.debugOutput('SessionStorage: aejswp_user_cancelled_cform_modal_display', AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display', true));
+	AEJSWP.debugOutput('SessionStorage: aejswp_user_opened_cform_modal_display', AEJSWP.getSessionStorageItem('aejswp_user_opened_cform_modal_display', true));
+	AEJSWP.debugOutput('SessionStorage: aewpjs_login_error_status_6_displayed', AEJSWP.getSessionStorageItem('aewpjs_login_error_status_6_displayed'));
+	AEJSWP.debugOutput('SessionStorage: aewpjs_sso_attempted', AEJSWP.getSessionStorageItem('aewpjs_sso_attempted'));
+	// local storage items
+	AEJSWP.debugOutput('LocalStorage: aejswp_user_casl_completed', AEJSWP.getLocalStorageItem('aejswp_user_casl_completed', true));
+	AEJSWP.debugOutput('LocalStorage: aejswp_first_optins_post_completed', AEJSWP.getLocalStorageItem('aejswp_first_optins_post_completed', true));
+	AEJSWP.debugOutput('LocalStorage: aeswp_cform_mailing_lists_completed', AEJSWP.getLocalStorageItem('aeswp_cform_mailing_lists_completed', true));
+	AEJSWP.debugOutput('LocalStorage: aejswp_optin_choices', AEJSWP.getLocalStorageItem('aejswp_optin_choices', true));
+}
+AEJSWP.resetAllState = function() {
+	// remove items that persist beyond logout
+	AEJSWP.debugOutput('Clearing all local storage');
+	AEJSWP.removeLocalStorageItem('aeswp_cform_mailing_lists_completed');
+	AEJSWP.removeLocalStorageItem('aejswp_optin_choices');
+	AEJSWP.removeLocalStorageItem('aejswp_user_casl_completed');
+	AEJSWP.removeLocalStorageItem('aejswp_first_optins_post_completed');
+	AEJSWP.logout();
+};
+
+/**************************
+ *
+ * Custom Form Methods
+ *
+ */
+
+// Renders the Recaptcha on each form that requires it
+AEJSWP.customFormRenderRecaptcha = function(cforms) {
+    // render the AE Connect Captcha render for each custom form
+    cforms.each(function() {
+        cform_id = jQuery(this).data('ae-cform-id');
+		const hash = jQuery(this).data('hash-selector') ? jQuery(this).data('hash-selector') : jQuery(this).find('[data-hash-selector]').data('hash-selector');
+        AEJSWP.debugOutput('Rendering Captcha form on element #' + 'ae-cform-captcha-'+cform_id);
+        if (
+			jQuery(`#ae-cform-captcha-${cform_id}`).length > 0
+			&& typeof AEJSWP.custom_forms[cform_id].captcha_widget === 'undefined'
+		) { // don't render captcha if user is signed in
+            AEJSWP.custom_forms[cform_id].captcha_widget = grecaptcha.render(`ae-cform-captcha-${cform_id}`, {
+                'sitekey' : AEJSWP.custom_forms[cform_id]['recaptcha_key'],
+                'size': 'invisible',
+                'badge' : 'inline',
+                'callback' : () => {AEJSWP.captchaVerifyCallback(cform_id, hash)} // N.B. this callback should submit the form data
+            });
+        }
+    });
+};
+
+//
+// this is added to custom form reg submit buttons
+// it applies custom form settings and handles necessary actions
+//
+AEJSWP.customFormEvent = false;
+AEJSWP.customFormEventFormID = false;
+AEJSWP.customFormSubmit = function(cform_id, event, hash) {
+	const container = (typeof hash !== 'undefined' ? jQuery(`.ae-cform-container.${hash}`) : jQuery(`#ae-cform-container-${cform_id}`));
+	if (jQuery(container).hasClass('-has-modal')) {
+		var form = (typeof hash !== 'undefined' ? 			
+			jQuery(`.ae-cform-modal-container.${hash}`).find(`#ae-cform-email-reg-${cform_id}`) :			
+			jQuery(`#ae-cform-modal-container-${cform_id}`).find(`#ae-cform-email-reg-${cform_id}`)
+		);
+	} else {
+		var form = (typeof hash !== 'undefined' ?
+			jQuery(`.ae-cform-container.${hash}`).find(`#ae-cform-email-reg-${cform_id}`) :
+			jQuery(`#ae-cform-container-${cform_id}`).find(`#ae-cform-email-reg-${cform_id}`)
+		);
+	}
+	AEJSWP.hideFormError(form)
+    if (typeof form.parsley == 'function') {
+        form.parsley({
+			errorsContainer: function(parsleyField) {
+				if (typeof parsleyField.$element.attr('data-intl-tel-input-id') !== 'undefined') {
+					var errorContainer = parsleyField.$element.parents('.ae-cform-item-mobilephone');
+					if (errorContainer.length > 0) {
+						return parsleyField.$element.parents('.ae-cform-item-mobilephone');
+					}
+				}
+				return parsleyField;
+			}
+		}).validate();
+    }
+	if(typeof grecaptcha !== 'undefined' && !AEJSWP.custom_forms[cform_id].captchaVerified && AEJSWP.custom_forms[cform_id].captcha_widget !== undefined) {
+		AEJSWP.customFormEvent = event;
+		AEJSWP.customFormEventFormID = cform_id;
+		AEJSWP.debugOutput('Recaptcha activated on widget ' + AEJSWP.custom_forms[cform_id].captcha_widget);
+		event.preventDefault();
+		grecaptcha.execute(AEJSWP.custom_forms[cform_id].captcha_widget);
+		return;
+	}
+
+
+	AEJSWP.debugOutput('User submitted custom form ' + cform_id);
+
+	// apply custom form settings
+	var cform_type_id = parseInt(AEJSWP.custom_forms[cform_id]['type_id']);
+	// CASL compliance flow
+	var user_casl_completed = ( AEJSWP.getLocalStorageItem('aejswp_user_casl_completed', true) ) ? AEJSWP.getLocalStorageItem('aejswp_user_casl_completed', true) : [];		// array of forms where user has already completed casl flow
+	var user_completed_this_casl_flow = (typeof(user_casl_completed[cform_id]) && user_casl_completed[cform_id] == true) ? true: false;
+	var user_casl_flow_in_progress = (AEJSWP.getSessionStorageItem('aejswp_user_casl_in_progress') == cform_id) ? true : false;
+	if(typeof(event) != 'undefined' && !user_completed_this_casl_flow && user_casl_flow_in_progress) {
+		AEJSWP.debugOutput('User completed CASL compliance flow, updating state');
+		user_casl_completed[cform_id] = true;
+		AEJSWP.removeSessionStorageItem('aejswp_user_casl_in_progress');		// they've just completed it
+		AEJSWP.setLocalStorageItem('aejswp_user_casl_completed', user_casl_completed, true);		// we only do CASL flow once per form
+	}
+	// handle submit click from mailing list form
+	// only do this if we don't have an ae user record
+	// (if we do have an ae user record, this data will populate the form fields, but only the values of those form fields will be passed to ECRM (and not AE))
+	// and only allow submission if there are no active parsely errors
+	if(typeof event != 'undefined' && cform_type_id == 2 && !jQuery('.parsley-error', form).length) {
+		AEJSWP.debugOutput('Mailing list form submission click without an AE user');
+		// prevent form post to AE
+		event.preventDefault();
+		// JS validation instead
+		AEJSWP.mailingListFormValidation(cform_id, hash);
+	}
+
+	// if this is a reg form and it hasn't been validated then check client side validation first
+	if(typeof event != 'undefined' && cform_type_id == 1) {
+
+		AEJSWP.debugOutput('Registration form - running parsley validation');
+
+		// if form has errors stop default click event
+		if(jQuery('.parsley-error', form).length || (typeof AEJSWP.formComplete !== 'undefined' && !AEJSWP.formComplete)) {
+			// Prevent the form from submitting if there are validation errors.
+			AEJSWP.debugOutput('Parsley errors - registration form not yet complete, preventing AE submit');
+			event.preventDefault();
+			// fire formErrors event, passing the parsley errors
+			var form_errors = [];
+			jQuery('.parsley-errors-list li', form).each(function() {
+				var error_text = jQuery(this)[0].innerHTML;
+				form_errors.push(error_text);
+			});
+			AEJSWP.fireFormErrorsEvent('registration', form_errors);
+			return;
+
+		} else {
+
+			AEJSWP.applyCustomFormSettings(cform_id, event, hash);
+
+			// no parsley validation errors
+			AEJSWP.debugOutput('No parsley errors');
+			// check minimum age if enabled
+			if(!AEJSWP.minimumAgeCheck(cform_id, hash)) {
+				// failed, prevent form submit
+				event.preventDefault();
+				return;
+			}
+			// finally check for completed / verified captcha
+			if (typeof(AEJSWP.custom_forms[cform_id]['form_fields']['captcha']) !== 'undefined' ) {
+				AEJSWP.debugOutput('Registration form has a captcha.');
+				if( typeof(AEJSWP.aeJS.user['data']) !== 'undefined' ) {
+					// we have an ae user record, which means user has already been through authentication (social or email/pass) so we don't need to apply captcha validation
+					AEJSWP.debugOutput('Authenticated user session found, captcha check not applied');
+				} else {
+					// check captcha has been completed
+					if (AEJSWP.custom_forms[cform_id].captchaVerified) {
+						// Form fields and captcha validated, allow submit to AE
+						AEJSWP.debugOutput('Form captcha validated');
+						AEJSWP.hideFormError(form);
+					} else {
+						// Form fields entered but captcha failed
+						AEJSWP.debugOutput('Registration form captcha not validated, preventing AE submit');
+						// Prevent form submitting
+						event.preventDefault();
+						// Display error to user
+						AEJSWP.setFormError(form, AEJSWP.custom_forms[cform_id]['flow_labels']['form_error_captcha_incomplete']);
+						// fire formError event
+						AEJSWP.fireFormErrorsEvent('registration', [AEJSWP.custom_forms[cform_id]['flow_labels']['form_error_captcha_incomplete']]);
+						return;
+					}
+				}
+			} else {
+				// no captcha, allow submit to AE
+				AEJSWP.debugOutput('No captcha on form');
+			}
+		}
+
+		// only the AE forms submit clicks pass the event paramater and have cform_type_id=1
+		// stop the AE form submit handler from firing
+		//event.preventDefault();
+		// stop repeated clicks until response comes back - this flag reset in flow handler
+		if( typeof(AEJSWP.ae_form_submit_in_progress) == 'undefined' || AEJSWP.ae_form_submit_in_progress == false ) {
+			AEJSWP.ae_form_submit_in_progress = true;
+			AEJSWP.debugOutput('Submitting form to AE');
+			event.preventDefault();
+			var tmp_user_cancelations = (AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display')) ? AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display', true) : [];
+			tmp_user_cancelations[cform_id] = true;
+			AEJSWP.setSessionStorageItem('aejswp_user_cancelled_cform_modal_display', tmp_user_cancelations, true);
+			AEJSWP.aeJS.trigger.submit( event.target.form );
+		} else if (AEJSWP.ae_form_submit_in_progress == true) {
+			event.preventDefault();
+			AEJSWP.debugOutput('Stopping form submit as user has previously clicked the submit button, still waiting on response from AE');
+		}
+	} else {
+        AEJSWP.debugOutput('Mailing List - running parsley validation');
+        // if form has errors stop default click event
+		if(jQuery('.parsley-error', form).length || !AEJSWP.formComplete) {
+			// Prevent the form from submitting if there are validation errors.
+			AEJSWP.debugOutput('Parsley errors - registration form not yet complete, preventing AE submit');
+			event.preventDefault();
+			// fire formErrors event, passing the parsley errors
+			var form_errors = [];
+			jQuery('.parsley-errors-list li', form).each(function() {
+				var error_text = jQuery(this)[0].innerHTML;
+				form_errors.push(error_text);
+			});
+			AEJSWP.fireFormErrorsEvent('mailinglist', form_errors);
+			return;
+		} else {
+
+			AEJSWP.applyCustomFormSettings(cform_id, event, hash);
+
+            // no parsley validation errors
+			AEJSWP.debugOutput('No parsley errors');
+			// check minimum age if enabled
+			if(!AEJSWP.minimumAgeCheck(cform_id, hash)) {
+				// failed, prevent form submit
+				event.preventDefault();
+				return;
+			} else {
+				var tmp_user_cancelations = (AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display')) ? AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display', true) : [];
+				tmp_user_cancelations[cform_id] = true;
+				AEJSWP.setSessionStorageItem('aejswp_user_cancelled_cform_modal_display', tmp_user_cancelations, true);
+			}
+        }
+    }
+};
+
+//
+// this will perform necessary setup for custom form flows - modifies the aeJS settings to allow custom forms to operate as we need (the aeJS settings are setup for widget use by default)
+// it is added in onclick handlers of the custom form social auth buttons (NB: these must be inline onclick handlers - we need this to run before aeJS click handlers)
+// it is also called on custom form submit
+// it is also called from AEJSReady if the validation target is set to a custom form
+AEJSWP.applyCustomFormSettings = function(cform_id, event, hash) {
+	var cform_type_id = parseInt(AEJSWP.custom_forms[cform_id]['type_id']);
+	AEJSWP.debugOutput('Applying Custom Form settings for cform_id = ' + cform_id + ', cform_type_id = ' + cform_type_id);
+
+	// drop some cform state info in session storage
+	AEJSWP.setLocalStorageItem('aejswp_cform_id', cform_id);		// cform we're currently using
+	AEJSWP.setLocalStorageItem('aejswp_cform_hash', hash);		// hash we're currently using
+
+	if(typeof AEJSWP.aeJS !== 'undefined') {
+		if(!AEJSWP.setSessionStorageItem('aejswp_cform_prev_return_url')) {
+			// store previous values so we can restore them at end of flow (NB: only do this if they're not already set - it's the first previous value we want to restore to)
+			AEJSWP.setSessionStorageItem('aejswp_cform_prev_return_url', AEJSWP.aeJS.settings['return_url']);
+			AEJSWP.setSessionStorageItem('aejswp_cform_prev_auth_window', AEJSWP.aeJS.settings['auth_window']);
+			AEJSWP.setSessionStorageItem('aejswp_cform_prev_extra_fields', AEJSWP.aeJS.settings['extra_fields'], true);		// complex type
+		}
+
+		// don't use the framework to show errors
+		AEJSWP.aeJS.settings['display_error_message'] = false;
+		// don't use the framework to show the additional info screen
+		AEJSWP.aeJS.settings['extra_fields_screen'] = false;
+		// don't use the framework to present verify email
+		AEJSWP.aeJS.settings['verify_email'] = false;
+		// if flow type is redirect, override the return_url to come back to this forms page, AEJSWP will handle next steps
+		if(AEJSWP.aeJS.settings['auth_window'] == false) {
+			// use the custom form page url if it's been defined, otherwise use current page
+			AEJSWP.aeJS.settings['return_url'] = (AEJSWP.custom_forms[cform_id]['page_url'] != '') ? AEJSWP.custom_forms[cform_id]['page_url'] : window.location.href;
+		}
+
+		// modify enabled social services
+		var cform_services = '';
+		var cform_signin_options = AEJSWP.custom_forms[cform_id]['signin_options'];
+		for(var key in cform_signin_options) {
+			// email will be included in signin_options but is not an ae social service (ae-service will be empty)
+			if(cform_signin_options[key]['ae-service'] != '') {
+				cform_services += cform_signin_options[key]['ae-service'] + ','
+			}
+		}
+		cform_services = cform_services.replace(/,\s*$/, ''); // remove last comma if it exists
+		AEJSWP.aeJS.settings['services'] = cform_services;
+
+		// modify required fields
+		AEJSWP.aeJS.settings['extra_fields'] = {};
+		for(var key in AEJSWP.custom_forms[cform_id]['form_fields']) {
+			// don't include password or captcha
+			if(key != 'password' && key != 'captcha') {
+				// do include email, all other remaining fields are potentially optional
+				var cform_fields = AEJSWP.custom_forms[cform_id]['form_fields'];
+				var field_required = Object.values(cform_fields[key])[0] == '1' ? true : false;
+				if (key == 'email' || field_required) {
+					AEJSWP.aeJS.settings['extra_fields'][key] = { 'label': key, 'required': true };
+				} else {
+					AEJSWP.aeJS.settings['extra_fields'][key] = { 'label': key, 'required': false };
+				}
+			}
+		}
+
+		AEJSWP.debugOutput('Modified aeJS', AEJSWP.aeJS.settings);
+	}
+
+	// only the AE forms submit clicks pass the event paramater
+	if(typeof event !== 'undefined' && event !== null) {
+		// stop the AE form submit handler from firing
+		event.preventDefault();
+		// stop repeated clicks until response comes back - this flag reset in flow handler
+		if( typeof(AEJSWP.ae_form_submit_in_progress) == 'undefined' || AEJSWP.ae_form_submit_in_progress == false ) {
+			AEJSWP.ae_form_submit_in_progress = true;
+			AEJSWP.debugOutput('Submitting form to AE');
+			AEJSWP.aeJS.trigger.submit( event.target.form );
+		} else {
+			AEJSWP.debugOutput('Stopping form submit as user has previously clicked the submit button, still waiting on response from AE');
+		}
+	}
+};
+
+//
+// Custom form validation against AE user
+//
+AEJSWP.customFormValidation = function(user) {
+	AEJSWP.debugOutput('Custom form validation');
+
+	var cform_id = AEJSWP.getLocalStorageItem('aejswp_cform_id');
+	const hash = AEJSWP.getLocalStorageItem('aejswp_cform_hash');
+	var missing_fields = AEJSWP.checkUserRequiredFields(cform_id, user, hash);
+	if(missing_fields.length > 0) {
+		// more data required from user
+		// but first check if they are being logged in & redirect them to the current forms page url if we can
+		if(AEJSWP.ae_login_fired) {
+			AEJSWP.ae_login_fired = false;
+			AEJSWP.redirectToCustomFormPage(cform_id);		// will only redirect if needed/possible
+		}
+		AEJSWP.displayAdditionalDetailsForm(cform_id, missing_fields);
+		return;
+	}
+
+	// no missing fields...
+	// next check for verified email if required
+	if( AEJSWP.verify_email && ! AEJSWP.userHasVerifiedEmail() ) {
+		AEJSWP.debugOutput('Verified Email required, but missing');
+		// drop the users email in session to allow us to re-present verify email after page refresh if user still hasn't yet verified (we may not have a full valid AE user session yet)
+		AEJSWP.setSessionStorageItem('aejswp_verify_email_in_progress', user.data.Email);
+		// display instructions and send email
+		AEJSWP.displayVerifyEmail(cform_id, user.data.Email);
+		AEJSWP.sendVerifyEmail(user.data.Email);
+		return;
+	}
+
+	// finish custom form flow
+	AEJSWP.custom_form_complete = true;		// used to stop a 2nd login run (onUser called before onLogin)
+	// close modal if necessary
+	if(parseInt(AEJSWP.custom_forms[cform_id]['modal_display']) == 1) {
+		jQuery.modal.close();
+	}
+	AEJSWP.clearCustomFormState(true);	// clear cform state immediately
+	switch( parseInt(AEJSWP.custom_forms[cform_id]['type_id']) ) {
+		case 1:
+			AEJSWP.debugOutput('Finished registration custom form');
+			AEJSWP.logUserIn(user, cform_id);
+			break;
+		case 2:
+			AEJSWP.debugOutput('Finished mailing list custom form');
+			AEJSWP.mailingListFormComplete(cform_id, user['data'], hash);
+			break;
+	}
+};
+
+AEJSWP.isSMSOptinEnabled = function (cformId, hash) {
+	var smsOptinEnabled = false
+	var user_optins = AEJSWP.getUserOptinChoices(cformId, false, hash)
+	for (var i in user_optins) {
+		var optin = user_optins[i]
+        if (typeof optin.type !== 'undefined' && optin.type === 'sms' && optin.user_choice === true) {
+			smsOptinEnabled = true
+			break;
+		}
+	}
+	return smsOptinEnabled
+}
+AEJSWP.isEmailOptinEnabled = function (cformId, hash) {
+	var emailOptinEnabled = false
+	var user_optins = AEJSWP.getUserOptinChoices(cformId, false, hash)
+	for (var i in user_optins) {
+		var optin = user_optins[i]
+        if (typeof optin.type !== 'undefined' && optin.type === 'email' && optin.user_choice === true) {
+			emailOptinEnabled = true
+			break;
+		}
+	}
+	return emailOptinEnabled
+}
+
+//
+// Check if any fields required for a custom form are missing in AE user record
+// returns an array missing_fields (the ae_key of each field missing)
+// NB: password and capctha fields are excluded and will never be in missing_fields
+//
+AEJSWP.checkUserRequiredFields = function(cform_id, user, hash) {
+	AEJSWP.debugOutput('Checking user record for required fields on cform ' + cform_id);
+	var missing_fields = [];
+	var cform_fields = AEJSWP.custom_forms[cform_id]['form_fields'];
+	var smsOptinEnabled = AEJSWP.isSMSOptinEnabled(cform_id, hash)
+	var emailOptinEnabled = AEJSWP.isEmailOptinEnabled(cform_id, hash)
+
+	for(var form_field_key in cform_fields) {
+		// form field keys & user object keys have different casing
+		var user_field_key = Object.keys(cform_fields[form_field_key])[0];
+		var user_field_required = Object.values(cform_fields[form_field_key])[0] == 1 ? true : false;
+        // check whether there are dynamic mandatory fields by the data-dynamic-field attribute
+        var dynamic_field = jQuery('.ae-cform-item.ae-cform-item-' + form_field_key).data('dynamic-field');
+		// we don't need to check password or captcha. Always ask for mobilephone if sms optin enabled
+		if ((smsOptinEnabled && form_field_key === 'country')
+			|| (smsOptinEnabled && form_field_key === 'mobilephone')
+			|| (form_field_key !== 'password' && form_field_key !== 'captcha'
+				&& user_field_required && dynamic_field !== 'disabled')) {
+			// if user field is undefined, null, empty, or the string "Unknown" or
+			// smsoptin is enabled and field is mobilephone - add it to missing fields
+			// TODO: Unknown check currently applies to all fields - probably a valid value for some - Jeff is going to provide a JS method for determining missing fields - rework this when available
+			if (typeof user.data[user_field_key] == 'undefined' || user.data[user_field_key] == ''
+				|| user.data[user_field_key] == null || user.data[user_field_key] == "Unknown"
+				|| (form_field_key === 'mobilephone' && smsOptinEnabled)
+				|| (form_field_key === 'country' && smsOptinEnabled)) {
+				// field is missing from user record, add to missing_fields
+				missing_fields.push(form_field_key);
+			} else if(form_field_key == 'country') {
+				// CASL compliance step
+				// additional check to see if this is a CASL enabled form & the user is from Canada - if so, forcibly add country to missing fields so we can capture their opt-in choices
+				var casl_enabled = (AEJSWP.custom_forms[cform_id]['opt_ins_casl_enabled'] == '1') ? true : false;
+				var optins_on_form = (Object.keys(AEJSWP.custom_forms[cform_id]['opt_ins']).length != 0) ? true : false;
+				var canadian_user = (
+					(typeof(user.data['CountryCode']) != 'undefined' && user.data['CountryCode'] == 'CA') ||
+					(typeof(user.data['Country']) != 'undefined' && user.data['Country'] == 'Canada') ||
+					(typeof(user.data['GeoCountry']) != 'undefined' && user.data['GeoCountry'] == 'CA')
+				) ? true : false;
+				var user_casl_completed = ( AEJSWP.getLocalStorageItem('aejswp_user_casl_completed', true) ) ? AEJSWP.getLocalStorageItem('aejswp_user_casl_completed', true) : [];		// array of forms where user has already completed casl flow
+				var user_completed_this_casl_flow = (typeof(user_casl_completed[cform_id]) && user_casl_completed[cform_id] == true) ? true: false;
+                if(casl_enabled && optins_on_form && canadian_user && !user_completed_this_casl_flow)  {
+					AEJSWP.debugOutput('User is from Canada and has not yet completed CASL flow - forcibly adding country to missing fields & updating opt-ins for CASL compliance');
+					missing_fields.push('country');
+					AEJSWP.updateCaslLabels(true);
+					AEJSWP.setSessionStorageItem('aejswp_user_casl_in_progress', cform_id);		// set state which will be picked up & reset in the register button click handler (applyCustomFormSetting)
+				}
+			} else if(form_field_key == 'birthdate') {
+				// Age restriction step
+				// much like CASL above, if user has the field in user record but it's not old enough, forcibly add dob back to form which will stop the user creation and output error to user
+				// unlike CASL flow we don't need to store state for this one as this should be intercepted every time (not just once)
+				if(!AEJSWP.minimumAgeCheck(cform_id, hash)) {
+					missing_fields.push(form_field_key);
+				}
+			}
+        } else if (form_field_key == 'email' && emailOptinEnabled) {
+            // NB This is needed for TikTok signup as there may be no email address supplied in the TikTok User object
+            if (typeof user.data[user_field_key] == 'undefined' || user.data[user_field_key] == ''
+				|| user.data[user_field_key] == null || user.data[user_field_key] == "Unknown"
+            ) {
+				// email field is missing from user record, add to missing_fields
+				missing_fields.push(form_field_key);
+            }
+        } else if (dynamic_field == 'enabled') {
+            missing_fields.push(form_field_key);
+        }
+	}
+	if(missing_fields.length > 0) {
+		AEJSWP.debugOutput('User is missing fields: ' + missing_fields);
+	}
+	return missing_fields;
+};
+
+//
+// minimum age check against a form
+// returns true if age check passed (not required or user is old enough)
+// returns false if age check failed and outputs error message to user on the form
+//
+AEJSWP.minimumAgeCheck = function(cform_id, hash) {
+	// check minimum age if enabled
+	if(AEJSWP.minimum_age) {
+		AEJSWP.debugOutput('Minimum age of ' + AEJSWP.minimum_age + ' required');
+		// if min age set we can be sure we have dob on the form or in the user record
+		var dob = jQuery(`.ae-cform-container.${hash},.ae-cform-modal-container.${hash}`).find('#ae-cform-input-reg-birthdate-' + cform_id).val();
+		if(typeof(dob) == 'undefined' || dob == '' || dob == 'undefined' || (parseInt(dob) !== parseInt(dob)) ) {
+			AEJSWP.debugOutput('no dob field on form, using dob from user record');
+			if(typeof(AEJSWP.aeJS.user['data']) != 'undefined' && typeof(AEJSWP.aeJS.user['data']['BirthDate']) != 'undefined') {
+				dob = AEJSWP.aeJS.user['data']['BirthDate'];
+			} else {
+				dob = new Date();
+			}
+		}
+		dob = new Date(dob);
+		var cur = new Date();
+		var age = Math.floor((cur - dob) / 31536000000); // Divide by 1000*60*60*24*365 (the diff will be in milliseconds
+		AEJSWP.debugOutput('User is ' + age);
+		if(age <= AEJSWP.minimum_age) {
+			AEJSWP.debugOutput('User is not old enough');
+			// Display error to user
+			var msg = AEJSWP.custom_forms[cform_id]['flow_labels']['form_error_age_check_fail'];
+			msg = msg.replace('{AGE}', AEJSWP.minimum_age);
+			var form = jQuery('#ae-cform-email-reg-' + cform_id);
+			AEJSWP.setFormError(form, msg);
+			// fire formErrors event
+			if(parseInt(AEJSWP.custom_forms[cform_id]['type_id']) == 1) {
+				AEJSWP.fireFormErrorsEvent('registration', [msg]);
+			} else {
+				AEJSWP.fireFormErrorsEvent('mailinglist', [msg]);
+			}
+			return false;
+		}
+	}
+	return true;
+};
+
+//
+// turns the reg form into additional details form
+// takes an array of fields that should be displayed to user
+//
+AEJSWP.displayAdditionalDetailsForm = function(cform_id, fields_to_display) {
+	AEJSWP.debugOutput('Displaying additional details form');
+	// iterate over form fields and remove those not in fields_to_display
+    var cform_type_id = parseInt(AEJSWP.custom_forms[cform_id]['type_id']);
+	var cform_fields = AEJSWP.custom_forms[cform_id]['form_fields'];
+	for(var form_field in cform_fields) {
+        if (cform_type_id == 1) {
+            // registration form
+            if (fields_to_display.includes(form_field)) {
+                jQuery('#ae-cform-reg-item-'+ form_field + '-' + cform_id).show();
+            } else {
+                jQuery('#ae-cform-reg-item-'+ form_field + '-' + cform_id).remove();
+            }
+            if(form_field == 'password') {
+                // also remove password confirm field
+                jQuery('#ae-cform-reg-item-password-confirm-' + cform_id).remove();
+            }
+        } else {
+            // sign up form
+            if (fields_to_display.includes(form_field)) {
+                jQuery('#ae-cform-reg-item-'+ form_field + '-' + cform_id).show();
+            } else {
+                jQuery('#ae-cform-reg-item-'+ form_field + '-' + cform_id).hide();
+            }
+        }
+	}
+	// populate info on form and hide captcha etc.
+	AEJSWP.updateCustomForms();
+	// update title
+	jQuery('#ae-cform-title-' + cform_id).html( AEJSWP.custom_forms[cform_id]['flow_labels']['additional_info_title'] );
+	// hide the sign-in options
+	jQuery('#ae-cform-signin-options-' + cform_id).hide();
+	// make email reg form visible
+	jQuery('#ae-cform-email-container-' + cform_id).show();
+	jQuery('#ae-cform-email-reg-container-' + cform_id).show();
+	jQuery('#ae-cform-email-login-container-' + cform_id).hide();
+	// hide the already registered link
+	jQuery('#ae-cform-already-registered-link-' + cform_id).hide();
+};
+
+//
+// Redirects the user to the custom form page
+// checks if it's both defined & the the user is not already on it
+//
+AEJSWP.redirectToCustomFormPage = function(cform_id) {
+	var cform_page_url = AEJSWP.custom_forms[cform_id]['page_url'];
+	if(cform_page_url != '') {
+		if(window.location.href.indexOf(cform_page_url) == -1) {
+			AEJSWP.debugOutput('Redirecting user to custom form page: ' + cform_page_url);
+			window.location.href = cform_page_url;
+			return true;
+		}
+	}
+	return false;
+};
+
+//
+// Check mailing list for required fields
+//
+AEJSWP.mailingListFormValidation = function(cform_id, hash) {
+	AEJSWP.debugOutput('Mailing list form submit');
+	// iterate over all fields for the form
+	var form = jQuery(`.${hash}`).find("#ae-cform-email-reg-" + cform_id);
+	var cform_fields = AEJSWP.custom_forms[cform_id]['form_fields'];
+	var form_complete = true;
+	for(var form_field_key in cform_fields) {
+		// check whether field is required
+		var form_field_required = Object.values(cform_fields[form_field_key]) == '1' ? true : false;
+		// we don't need to check password or captcha
+		if(form_field_key != 'password' && form_field_key != 'captcha') {
+			var form_field_value = ''
+			if (form_field_key === 'mobilephone') {
+				// The mobile phone field can be dynamically set as required depending on the SMS opt-in
+				form_field_required = jQuery(form).find(`#ae-cform-input-reg-mobilephone-${cform_id}`).attr('required') == 'required'
+                form_field_value = window.AEWPFrontEnd.forms[cform_id].hashSelectors[hash].iti.getNumber()
+			} else {
+				form_field_value = jQuery(form).find('#ae-cform-reg-item-' + form_field_key + '-' + cform_id + ' :input').val();
+			}
+			AEJSWP.debugOutput(form_field_key + ' = ' + form_field_value);
+			if(form_field_value == '' && form_field_required) {
+				form_complete = false;
+			}
+		}
+	}
+
+	// check minimum age if required
+	if(!AEJSWP.minimumAgeCheck(cform_id, hash)) {
+		// the minimumAgeCheck function outputs error to user, return without further processing
+		return;
+	}
+
+	// Check if this mailing list form has a captcha to complete
+	if (typeof(AEJSWP.custom_forms[cform_id]['form_fields']['captcha']) !== 'undefined') {
+		AEJSWP.debugOutput('Email form has a captcha.');
+		// Check captcha has been completed
+		if (!AEJSWP.custom_forms[cform_id].captchaVerified) {
+			AEJSWP.debugOutput('Captcha not complete / validated.');
+			AEJSWP.setFormError(form, AEJSWP.custom_forms[cform_id]['flow_labels']['form_error_captcha_incomplete']);
+			// fire formError event
+			AEJSWP.fireFormErrorsEvent('mailinglist', [AEJSWP.custom_forms[cform_id]['flow_labels']['form_error_captcha_incomplete']]);
+			return;
+		} else {
+			AEJSWP.debugOutput('Captcha complete.');
+		}
+	}
+
+	let formIncompleteError = AEJSWP.custom_forms[cform_id]['flow_labels']['form_error_incomplete']
+
+	if (form_complete) {
+		const checkedOptins = AEJSWP.getCheckedOptins(cform_id, hash)
+		if (checkedOptins.length === 0) {
+			formIncompleteError = AEJSWP.custom_forms[cform_id]['flow_labels']['form_error_incomplete_optins']
+			form_complete = false
+		}
+	}
+
+	if( ! form_complete ) {
+		AEJSWP.debugOutput('Mailing List Form incomplete');
+		// Display error to user
+		AEJSWP.setFormError(form, formIncompleteError);
+		// fire formErrors event, passing the error message
+		AEJSWP.fireFormErrorsEvent('mailinglist', [formIncompleteError]);
+        AEJSWP.formComplete = false;
+	} else {
+		AEJSWP.debugOutput('Mailing List Form complete, next steps...');
+		var user_data = AEJSWP.getNonAEUserDetails(cform_id, hash);
+		AEJSWP.mailingListFormComplete(cform_id, user_data, hash);
+        AEJSWP.formComplete = true;
+	}
+};
+
+//
+// this is used to get user details from a mailing list form
+// it returns in a format identical to AE user data
+// NB: when user has not used social sign-in
+//
+AEJSWP.getNonAEUserDetails = function(cform_id, hash) {
+	var user_data = {};
+	// iterate over all fields for the form
+	var cform_fields = AEJSWP.custom_forms[cform_id]['form_fields'];
+	for(var form_field_key in cform_fields) {
+		// don't add password or captcha
+		if(form_field_key != 'password' && form_field_key != 'captcha') {
+			if (form_field_key === 'mobilephone') {
+                var form_field_value = window.AEWPFrontEnd.forms[cform_id].hashSelectors[hash].iti.getNumber()
+			} else {
+				if (typeof hash !== 'undefined') {
+					var form_field_value = jQuery('[data-hash-selector="' + hash +'"] #ae-cform-input-reg-' + form_field_key + '-' + cform_id).val();
+				} else {
+					var form_field_value = jQuery('#ae-cform-reg-item-' + form_field_key + '-' + cform_id + ' :input').val();
+				}
+			}
+			var user_field_key = cform_fields[form_field_key];		// user & form fields keys have different casing
+			// get the key value from the user_field_key array
+			user_data[Object.keys(user_field_key)[0]] = form_field_value;
+		}
+	}
+	AEJSWP.debugOutput('Non AE User data', user_data);
+	return user_data;
+}
+
+//
+// finish off mailing list form flow
+//
+AEJSWP.mailingListFormComplete = function(cform_id, user_data, hash) {
+	AEJSWP.debugOutput('Mailing list completed, cform_id = ' + cform_id);
+	// add the form completion to local storage tracking array
+	var forms_completed = AEJSWP.getLocalStorageItem('aeswp_cform_mailing_lists_completed', true) || [];
+    // check that a form marked as already completed is not submitted again
+    var form_completed = false;
+    for (var form_id in forms_completed) {
+        if (forms_completed[form_id] == cform_id) {
+            form_completed = true;
+        }
+    }
+    if (!form_completed) { // if the form is already completed, don't try to submit again
+        forms_completed.push(cform_id);
+    	AEJSWP.setLocalStorageItem('aeswp_cform_mailing_lists_completed', forms_completed, true);
+
+        // send user data & opt-ins to WP
+    	// if we have a waiting function defined then it will wait for that event to occur before executing optins
+        AEJSWP.maybe_wait_for_event('send_user_optins', function() {
+            var optins = AEJSWP.getUserOptinChoices(cform_id, false, hash);
+            AEJSWP.sendUserOptins(cform_id, user_data, optins, hash);
+            // show success message
+            AEJSWP.displayMailingListSuccess(cform_id, hash);
+            // run callback if it's defined (see README)
+            AEJSWP.executeFunctionByName('AEJSWP.mailingListFormCompleteCallback', window, cform_id);
+
+			// Callback mailing list form completed handlers
+			for (var i = 0; i < AEJSWP.mailingListFormCompletedCallbacks.length; i++) {
+				for (var j in AEJSWP.mailingListFormCompletedCallbacks[i]) {
+					AEJSWP.debugOutput('Calling custom aejsready_handler : ' + AEJSWP.mailingListFormCompletedCallbacks[i][j]);
+					AEJSWP.executeFunctionByName(AEJSWP.mailingListFormCompletedCallbacks[i][j], window, cform_id);
+				}
+				
+			}
+    	});
+    }
+};
+
+//
+// Display mailing list form success
+//
+AEJSWP.displayMailingListSuccess = function(cform_id, hash) {
+	if (typeof hash === 'undefined' || hash == 'undefined'){
+		// need to check here if the modal is:-
+		// a) available for this form id (think there should only be one modal anyway = 1)
+		// b) if the modal is open, then target that, otherwise update the embedded form with form_id
+		if (jQuery(`#ae-cform-modal-container-${cform_id}.modal`).is(':visible')){			
+			hash = jQuery(`.modal[data-ae-cform-id=${cform_id}]`).data('hash-selector');
+		} else {			
+			hash = jQuery(`.ae-cform-container[data-ae-cform-id=${cform_id}]:not(.-has-modal)`).data('hash-selector')
+		}
+	}
+
+	AEJSWP.debugOutput(`Mailing list form id ${cform_id} and hash ${hash} completed`);
+	var custom_form_container = jQuery(`.${hash}[data-ae-cform-id=${cform_id}]:not(.-has-modal)`);
+
+	if(custom_form_container.length) {
+		//check if custom form has a custom CTA trigger
+		if(custom_form_container.attr('data-custom-cta')) {
+
+			//update custom CTA with success HTML
+			var custom_cta_elements = jQuery('.ae-custom-cta');
+			if(custom_cta_elements.length) {
+
+				//loop through each custom CTA and replace it's HTML
+				jQuery(custom_cta_elements).each(function() {
+					var custom_cta_form_id = AEJSWP.getCustomCTAFormID(jQuery(this));
+
+					//get the success HTML based on cform ID
+					var success_html = jQuery('#ae-cform-mailing-list-success-' + custom_cta_form_id).html();
+					if(success_html.length) {
+						jQuery(this).replaceWith(success_html);
+					} else {
+						//if no success HTML found then remove the CTA element
+                        jQuery(this).remove();
+					}
+                });
+			}
+		} else {
+
+            // show the mailing list success div contents instead of the form or the cta
+            custom_form_container.html( jQuery('#ae-cform-mailing-list-success-' + cform_id).html() );
+            custom_form_container.addClass('ae-cform-mailing-list-success-' + cform_id);
+		}
+	}
+
+	// close modal if necessary
+	if(jQuery(`.jquery-modal #ae-cform-modal-container-${cform_id}.${hash}`).length > 0) {
+		//jQuery.modal.close();
+	}
+};
+
+//
+// re-add the data-ae-register-form="email" back to mailing list form
+// mailing list form social auth flow - the additional details form should be turned back into an AE update form
+//
+AEJSWP.addAEHandlerBackToCustomForm = function(cform_id) {
+	if(typeof AEJSWP.aeJS.user.data != 'undefined') {
+		AEJSWP.debugOutput('AE user detected, adding AE handler back to any custom forms');
+		jQuery('#ae-cform-email-reg-' + cform_id).attr('data-ae-register-form', 'email');
+		AEJSWP.aeJS.trigger.attach();
+	}
+};
+
+//
+// display the verify email state
+//
+AEJSWP.displayVerifyEmail = function(cform_id, email) {
+	// show the verify email div
+	jQuery('#ae-cform-verify-email-container-' + cform_id).show();
+	// replace the {USER_EMAIL} token with the users email
+	var cur_html = jQuery('#ae-cform-verify-email-container-' + cform_id + ' > .ae-cform-verify-email-instructions').html();
+	var new_html = cur_html.replace('{USEREMAIL}', email);
+	jQuery('#ae-cform-verify-email-container-' + cform_id + ' > .ae-cform-verify-email-instructions').html(new_html);
+	// hide the mailing list success div
+	jQuery('#ae-cform-mailing-list-success-' + cform_id).hide();
+	// hide the title
+	jQuery('#ae-cform-title-' + cform_id).hide();
+	// hide the sign-in options
+	jQuery('#ae-cform-signin-options-' + cform_id).hide();
+	// hide the email form containers
+	jQuery('#ae-cform-email-container-' + cform_id).hide();
+	// hide opt-ins
+	jQuery('#ae-cform-optins-container-' + cform_id).hide();
+};
+
+//
+// trigger the send_verify_email
+// password_reset = int - optional (assumed false), int indicating if this is the start of a password reset flow and which cform_id was used
+//
+AEJSWP.sendVerifyEmail = function(email, password_reset) {
+	var password_reset = password_reset || false;
+	AEJSWP.debugOutput('Triggering verify email send to ' + email);
+	var message = {
+		'subject': AEJSWP.aeJS.settings.email_format.verify_email_subject,
+		'body': AEJSWP.aeJS.settings.email_format.verify_email_message,
+		'label': AEJSWP.aeJS.settings.email_format.verify_email_link
+	};
+	// set return url to be current page
+	//var return_url = window.location.origin + window.location.pathname;
+	var return_url = window.location.href;
+	// if the integrator has used the AEJSWP.add_url_param_to_return_url(key,value) function, make sure the key/value gets added here too
+	if(typeof(AEJSWP.param_on_return_url_key) !== 'undefined' && Array.isArray(AEJSWP.param_on_return_url_key)) {
+			for (var i = 0; i < AEJSWP.param_on_return_url_key.length; i++) {
+			  	return_url = AEJSWP.addURLParameter(return_url, AEJSWP.param_on_return_url_key[i], AEJSWP.param_on_return_url_value[i]);
+			}
+	}
+	if(password_reset) {
+		var message = {
+			'subject': AEJSWP.aeJS.settings.email_format.reset_pw_email_subject,
+			'body': AEJSWP.aeJS.settings.email_format.reset_pw_email_message,
+			'label': AEJSWP.aeJS.settings.email_format.reset_pw_email_link
+		};
+		// append a flag to return url which we'll use to identify that this user is returning from password reset flow not verify email flow
+		// NB: password_reset=cform_id
+		return_url = AEJSWP.addURLParameter(return_url, 'password_reset', password_reset);
+	}
+	AEJSWP.debugOutput('sendVerifyEmail return_url = ' + return_url);
+	//AEJSWP.debugOutput('message = ', message);
+	AEJSWP.aeJS.trigger.send_verify_email(return_url, email, message);
+};
+
+//
+// Update custom form display states on page
+//
+AEJSWP.updateCustomForms = function() {
+	AEJSWP.debugOutput('Updating custom form display states');
+	
+	var completedMailingList = AEJSWP.getLocalStorageItem('aeswp_cform_mailing_lists_completed', true);
+	var allFormIDs = Array();
+	jQuery('.ae-cform-container, .ae-cform-modal-container').each(function() {
+		allFormIDs.push(jQuery(this).data('ae-cform-id'));
+	});
+
+	// ensure the values are integer/numbers and not strings
+	var completedMailingList = completedMailingList.map(function (x) { 
+		return parseInt(x, 10); 
+	});
+	// Check which forms have been completed and those that haven't
+	for (let loopIdx = 0; loopIdx < allFormIDs.length; loopIdx++) {
+		if(completedMailingList.indexOf(allFormIDs[loopIdx]) !== -1){
+			// form id found and completed so hide the form and show the success
+			// Tweak the layout of the thank you message for v2 version of the form (grid layout - reset the columns to one)
+			jQuery('[id^=ae-cform-container-' + allFormIDs[loopIdx] + '] .newsletter-wrapper').css('grid-template-columns', '1fr');
+			jQuery('[id^=ae-cform-container-' + allFormIDs[loopIdx] + '] .ae-cform-mailing-list-success').show();
+			jQuery('[id^=ae-cform-container-' + allFormIDs[loopIdx] + '] .ae-cform-email-reg-container').hide();
+			jQuery('[id^=ae-cform-container-' + allFormIDs[loopIdx] + '] .ae-cform-optins-container').hide();
+			jQuery('[id^=ae-cform-container-' + allFormIDs[loopIdx] + '] .ae-cform-email-container').show();
+		} else {
+			// form id not found so assumed in-complete
+			jQuery('[id^=ae-cform-container-' + allFormIDs[loopIdx] + '] .ae-cform-title').css('display', ''); //using show() adds inline style of display:block - affecting custom style ordering!
+			jQuery('[id^=ae-cform-container-' + allFormIDs[loopIdx] + '] .ae-cform-signin-options').show();
+			jQuery('[id^=ae-cform-container-' + allFormIDs[loopIdx] + '] .newsletter-image-container').show();
+		}
+	}
+
+	// first check that required jquery version is on page, if not display error instead of form to allow site developer to pick this up
+	var vernums = jQuery.fn.jquery.split('.');
+	if (parseInt(vernums[0]) <= 1 && parseInt(vernums[1]) < 8) {
+		console.log('The version of jQuery on the page is too old for AE Connect custom forms, please upgrade to 1.8.x or better');	// always output this error
+	jQuery('.ae-cform-container').html("The loaded version of jQuery is too old. Please upgrade to 1.8.x or better.");
+	}
+
+	// show the email form if custom form is set to show the form expanded
+	jQuery('.ae-cform-container, .ae-cform-modal-container').each(function() {
+		const _thisContainer = jQuery(this)
+		const hash = jQuery(this).data('hash-selector');
+		var cform_id = jQuery(this).data('ae-cform-id');
+		if (
+			typeof(AEJSWP.custom_forms[cform_id].expanded_email) != 'undefined'
+			&& parseInt(AEJSWP.custom_forms[cform_id].expanded_email) != 0
+			&& AEJSWP.custom_forms[cform_id].expanded_email != ''
+		) {
+			AEJSWP.debugOutput('Custom form ' + cform_id + ' is set to show email form');
+			jQuery(_thisContainer).find('#ae-cform-email-container-' + cform_id).show();
+			if( Object.keys(AEJSWP.custom_forms[cform_id].signin_options).length == 1 ) {
+				// email is the only sign-in option, so lets hide the sign-in options container too to stop an empty div being displayed with top & bottom borders
+				jQuery(_thisContainer).find('#ae-cform-signin-options-' + cform_id).hide();
+			}
+		}
+	});
+
+	// move the captcha badge to somewhere we control it and remove duplicates
+	var checkTimer = setInterval(function() {
+		if(jQuery('.grecaptcha-badge').length > 0) {
+			jQuery('.grecaptcha-badge').each(function(i) {
+				if (i == 0) {
+					jQuery(this).appendTo("#grecaptcha-badge-cform");
+					jQuery("#grecaptcha-badge-cform").show();
+					jQuery(this).css('visibility', 'visible');
+				} else {
+					jQuery(this).hide();
+				}
+			});
+		clearInterval(checkTimer);
+		}
+	}, 30);
+
+	// check if there is an AE user session (not necessarily allowed to login to our site) and use info to pre-populate all forms
+	if(typeof(AEJSWP.aeJS) != 'undefined' && typeof(AEJSWP.aeJS.user.data) != 'undefined') {
+		var user_data = AEJSWP.aeJS.user.data;
+		// do this for all custom forms
+		jQuery('.ae-cform-container, .ae-cform-modal-container').each(function() {
+			const cform_id = jQuery(this).data('ae-cform-id');
+			const hash = jQuery(this).data('hash-selector');
+			if (typeof hash !== 'undefined' && typeof cform_id !== 'undefined') {
+				var cform_fields = AEJSWP.custom_forms[cform_id]['form_fields'];
+				for(var form_field_key in cform_fields) {
+					var user_field_key = Object.keys(cform_fields[form_field_key])[0];		// user & form fields keys have different casing
+					// get the key value from the user_field_key array
+					switch(form_field_key) {
+						case 'birthdate':
+							var birthdate = user_data[user_field_key];
+							if(typeof birthdate !== 'undefined' && birthdate !== null && birthdate.length == 10) {
+								jQuery('.ae-cform-item-' + form_field_key + ' input[name=s_birthdate_day]').val(birthdate.substring(8, 10));
+								jQuery('.ae-cform-item-' + form_field_key + ' input[name=s_birthdate_month]').val(birthdate.substring(5, 7));
+							}
+							break;
+						case 'country':
+							// prefer user choice over geo ip version
+							var countryCode = null
+							if(typeof(user_data['CountryCode']) != 'undefined') {
+								countryCode = user_data['CountryCode'];
+							} else if(typeof(user_data['GeoCountry']) != 'undefined') {
+								countryCode = user_data['GeoCountry'];
+							}
+
+							if (countryCode) {
+								jQuery('#ae-cform-input-reg-country-' + cform_id)
+									.val(countryCode);
+								if (AEJSWP.isSMSOptinEnabled(cform_id, hash) && AEWPFrontEnd.forms[cform_id].hashSelectors[hash].iti !== null) {
+									AEWPFrontEnd.forms[cform_id].hashSelectors[hash].iti.setCountry(countryCode);
+								}
+							}
+							// if we've updated to Canada and CASL enabled, do CASL compliance
+							var country_id = jQuery('#ae-cform-input-reg-country-' + cform_id).val();
+							var casl_enabled = (AEJSWP.custom_forms[cform_id]['opt_ins_casl_enabled'] == '1') ? true : false;
+							if(country_id == 'CA' && casl_enabled) {
+								AEJSWP.debugOutput('CASL enabled & user is from Canada, updating opt-ins & terms for CASL compliance');
+								AEJSWP.updateCaslLabels(true);
+							}
+							break;
+						case 'mobilephone':
+							// Do not pre-populate mobile phone if sms opt-in is enabled
+							if (!AEJSWP.isSMSOptinEnabled(cform_id, hash)) {
+								jQuery('.ae-cform-item-' + form_field_key + ' .ae-cform-input')
+									.val(AEJSWP.aeJS.user.data[user_field_key]);
+							}
+							break;
+						default:
+							jQuery('.ae-cform-item-' + form_field_key + ' .ae-cform-input').val(AEJSWP.aeJS.user.data[user_field_key]);
+							break;
+					}
+				}
+			}
+		});
+	}
+
+	// update the dob hidden input from the 3 inputs
+	AEJSWP.updateDOB();
+
+	// if we have an authenticated user session, hide captcha (they have been authed, so no need for a bot check)
+	if(AEJSWP.getLocalStorageItem('aejswp_cform_id') && typeof(AEJSWP.aeJS) != 'undefined' && typeof(AEJSWP.aeJS.user.data) != 'undefined') {
+		AEJSWP.hideCaptchaOnForm(AEJSWP.getLocalStorageItem('aejswp_cform_id'));
+	}
+	// redisplay awaiting email verification if still awaiting verification
+	if(AEJSWP.getSessionStorageItem('aejswp_verify_email_in_progress') && ! AEJSWP.userHasVerifiedEmail()) {
+		AEJSWP.displayVerifyEmail(AEJSWP.getLocalStorageItem('aejswp_cform_id'), AEJSWP.getSessionStorageItem('aejswp_verify_email_in_progress'));
+	}
+	// redisplay password reset panel step2 if still in progress
+	if(AEJSWP.getSessionStorageItem('aejswp_password_reset_member_service_id')) {
+		AEJSWP.displayEnterNewPassword();
+	}
+	// if password reset not in progress but url has password_reset=1 - re-apply password reset in progress session (user may be coming back after closing browser)
+	if(! AEJSWP.getSessionStorageItem('aejswp_password_reset_in_progress') && AEJSWP.getQueryStringValue('password_reset') != '') {
+		AEJSWP.setSessionStorageItem('aejswp_password_reset_in_progress', true);
+	}
+
+	// re-apply any saved opt-in states
+	AEJSWP.restoreUserOptins();
+
+	//set opt-ins as checked to trigger validation updates
+	jQuery('[data-ae-cform-id]').each(function() {
+		const cform_id = jQuery(this).attr('data-ae-cform-id')
+		jQuery('.ae-cform-optin-checkbox', jQuery(this)).each(function() {
+			AEJSWP.updateRelatedField(cform_id, jQuery(this))
+		})
+	})
+
+	// redisplay success message on any completed mailing list forms
+	var forms_completed = AEJSWP.getLocalStorageItem('aeswp_cform_mailing_lists_completed', true);
+	if(forms_completed) {
+		for(var i=0; i<forms_completed.length; i++) {
+			AEJSWP.displayMailingListSuccess(forms_completed[i]);
+		}
+	}
+
+	// finally if this is a modal form and there is a flow in progress, re-open the modal
+	// NB: if the user has previously closed the modal themselves, then never re-open it automatically, they must re-open it - this is better UX
+	// NB 2: only popup if user had previously launched it
+	// NB 3: if password reset or verify email flow in progress always launch it (but allow the user to cancel)
+	var user_opened_modals = (AEJSWP.getSessionStorageItem('aejswp_user_opened_cform_modal_display', true)) ? AEJSWP.getSessionStorageItem('aejswp_user_opened_cform_modal_display', true) : [];
+	var cform_id = AEJSWP.getLocalStorageItem('aejswp_cform_id');
+
+	if(cform_id && user_opened_modals[cform_id]) {
+		AEJSWP.debugOutput('Custom form flow still in progress and user has previously opened modal');
+		var user_cancelations = (AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display')) ? AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display', true) : [];
+		var user_cancelled_this_modal = (user_cancelations[cform_id] != 'undefined' && user_cancelations[cform_id] != 'null' && user_cancelations[cform_id] == true) ? true : false;
+		if(parseInt(AEJSWP.custom_forms[cform_id]['modal_display']) == 1) {
+			if( AEJSWP.getQueryStringValue('password_reset') != '' ) {
+				// we don't re-open if password_reset in URL - there is an extra redirect after this (see emailVerifyHandler) and we don't want to popup the modal twice
+				AEJSWP.debugOutput('Not re-opening modal, password reset redirect in progress');
+			} else {
+				if( AEJSWP.getSessionStorageItem('aejswp_password_reset_force_modal_open') ) {
+					AEJSWP.debugOutput('User returning from password reset, so re-opening modal');
+					jQuery('#ae-cform-modal-container-' + cform_id).modal().trigger('ae-modal-open');
+					AEJSWP.removeSessionStorageItem('aejswp_password_reset_force_modal_open');	// clear the flag to let us know we've done this
+				} else if( ! user_cancelled_this_modal  ) {
+					AEJSWP.debugOutput('User has not closed the modal themseleves, so re-opening modal automatically');
+					jQuery('#ae-cform-modal-container-' + cform_id).modal().trigger('ae-modal-open');
+				} else {
+					AEJSWP.debugOutput('User previously clicked close on this custom from modal, so not re-opening automatically');
+				}
+			}
+		}
+	} else if (cform_id) {
+		// user may come back to a new browser window after password reset or verify email - in this case we have no session storage state, but still need to open the modal automatically
+		if(parseInt(AEJSWP.custom_forms[cform_id]['modal_display']) == 1) {
+			AEJSWP.debugOutput('Custom form flow still in progress and custom form is using modal display, but user has not opened it yet');
+			// we force re-open of modal if password reset in progress
+			// however we don't re-open if password_reset in URL - there is an extra redirect after this (see emailVerifyHandler) and we don't want to popup the modal twice
+			if( AEJSWP.getSessionStorageItem('aejswp_password_reset_force_modal_open') && ! AEJSWP.getQueryStringValue('password_reset') != '' ) {
+				AEJSWP.debugOutput('Password reset in progress, so re-opening modal');
+				jQuery('#ae-cform-modal-container-' + cform_id).modal().trigger('ae-modal-open');
+				AEJSWP.removeSessionStorageItem('aejswp_password_reset_force_modal_open');
+			}
+		}
+	}
+};
+
+//
+// restore all user optins
+//
+AEJSWP.restoreUserOptins = function() {
+	AEJSWP.debugOutput('Restoring user optin choices')
+	// NB: we use local storage for this as we want to remember these for as long as the user doesn't clear their browser
+	var optin_choices = AEJSWP.getLocalStorageItem('aejswp_optin_choices', true);
+	const hash = AEJSWP.getLocalStorageItem('aejswp_cform_hash', true);
+	const container = jQuery(`.${hash}`);
+	if(optin_choices) {
+		for(var i=0; i<optin_choices.length; i++) {
+			if(optin_choices[i] != null) {
+				var optin_check = jQuery(container).find('.ae-cform-optin-checkbox[data-ae-optin-id="' + i + '"]');
+				if(optin_check.length) {
+					var cform_container = optin_check.parents('[data-ae-cform-id]');
+					if(cform_container.length) {
+						var cform_id = parseInt(cform_container.attr('data-ae-cform-id'));
+						if(typeof AEJSWP.custom_forms[cform_id] !== 'undefined') {
+							var cform_type_id = parseInt(AEJSWP.custom_forms[cform_id]['type_id']);
+
+							// GDPR - Stop pre-checking of user opt-ins. Only applied to Sign-up form. (Added by AB 01-10-2018)
+							if(cform_type_id == 1) {
+								return;
+							} else {
+                                // do not apply user optin override to implied optin, which can happen in certain edge cases
+                                if (optin_check.closest( ".ae-cform-implied-optin" ).length < 1) {
+                                    optin_check.prop( 'checked', optin_choices[i] );
+									optin_check.change()
+    								AEJSWP.enableSignUpFormSubmitButtons(i, cform_id, optin_choices[i], hash);
+                                }
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+};
+
+//
+// Fire the user optin choices to the WP backend
+// used when login is disabled for whatever reason;
+//  - performance settings
+//  - mailing list form completed
+//
+AEJSWP.sendUserOptins = function(cform_id, user_data, user_optins, hash) {
+
+		var optins_changed = AEJSWP.getUserUpdatedOptins(cform_id, user_optins);
+		if( optins_changed ) {
+			AEJSWP.debugOutput('Posting user + optin data for cform_id ' + cform_id);
+
+			//allow other scripts to override/append to user data
+            user_data = AEJSWP.run_filter('filter__optin_user_data', user_data);
+
+            // add user services data to post data
+            if (typeof AEJSWP.aeJS.user != 'undefined' && AEJSWP.aeJS.user.hasOwnProperty('services')) {
+                user_data['services'] = AEJSWP.aeJS.user['services'][0]['Service'];
+            }
+
+			// If no country data is supplied, Push API will look up country code from its own IP database.
+			// This is now out of date and should not be relied upon.
+			// Instead, we'll use the country code as looked up by ECRM plugin and stored in local storage
+			if (typeof user_data.Country === 'undefined' || user_data.Country.length == 0) {
+				if (AEJSWP.getLocalStorageItem('aejswp_user_country_by_ip') !== null) {
+					user_data.Country = AEJSWP.getLocalStorageItem('aejswp_user_country_by_ip');
+				}
+			}
+
+			var post_data = {
+				action: AEJSWP.ajax_action_send_user_optins,
+				cform_id: cform_id,
+				user_data: user_data,
+				optins: optins_changed,
+				confirm_code: typeof grecaptcha !== 'undefined' && AEJSWP.custom_forms[cform_id].captcha_widget !== undefined ? grecaptcha.getResponse(AEJSWP.custom_forms[cform_id].captcha_widget) : ''
+			};
+			AEJSWP.debugOutput('WP Update User Optins AJAX request : ', post_data);
+			jQuery.post(AEJSWP.ajaxurl, post_data, function( response ) {
+				try {
+					// handle response
+					response = jQuery.parseJSON( response );
+					if(response.status == 0) {
+		        // fail
+						// output response to console regardless of debug setting to facilitate debugging on production servers
+						console.log('AEJSWP Error: Update User Optins AJAX response : ', response);
+					} else {
+						//  success
+						AEJSWP.debugOutput('WP Update User Optins AJAX response : ', response);
+						// clear state
+						AEJSWP.removeSessionStorageItem('aejswp_initial_optin_choices');
+						// fire optinsUpdated analytics event
+						var data = {
+							cform_id: cform_id,
+							user_data: user_data,
+							optins: optins_changed,
+						};
+						AEJSWP.trackEvent('optinsUpdated', data);
+					}
+				} catch (e) {
+					// uncontrolled error - output response to console regardless of debug setting to facilitate debugging on production servers
+					console.log('AEJSWP Error: WP Update User Optins AJAX response : ', response);
+				}
+			});
+		} else {
+			AEJSWP.debugOutput('User optins not changed, so not making backend post');
+		}
+};
+
+//
+// get optins user has updated since last time (based on sessionStorage)
+// returns an array of the user_optins changed since last login
+// returns false if no optins have chnaged since last login
+//
+AEJSWP.getUserUpdatedOptins = function(cform_id, user_optins) {
+	var changed_optins = {}		// create a new object (we do not want to modify the original user_optins object here & they are passed by reference in JS)
+	var optins_changed = false;
+	var initial_optins = AEJSWP.getSessionStorageItem('aejswp_initial_optin_choices', true);
+     // if initial_optins are null, then another form has submitted and the sessionStorage has been cleared, so reset to original setting
+    if (initial_optins === null) {
+        AEJSWP.setOptinChoicesSessionStorage();
+        initial_optins = AEJSWP.getSessionStorageItem('aejswp_initial_optin_choices', true);
+    }
+	// if this is first time we've seen user, then always pass optins regardless of their state
+	var posts_completed = ( AEJSWP.getLocalStorageItem('aejswp_first_optins_post_completed', true) ) ? AEJSWP.getLocalStorageItem('aejswp_first_optins_post_completed', true) : [];
+	var first_post_for_this_form = (typeof(posts_completed[cform_id]) && posts_completed[cform_id] == true) ? false: true;
+	if(first_post_for_this_form) {
+		AEJSWP.debugOutput('First time user has completed this form, marking all optins for this cform as changed');
+		optins_changed = true;
+		posts_completed[cform_id] = true;
+		AEJSWP.setLocalStorageItem('aejswp_first_optins_post_completed', posts_completed, true);
+	}
+	for(var optin_id in user_optins) {
+		if(initial_optins[optin_id] == 'undefined' || (user_optins[optin_id]['user_choice'] != initial_optins[optin_id]) ) {
+			// this optin has changed
+			optins_changed = true;
+			changed_optins[optin_id] = user_optins[optin_id];
+		} else {
+			// this optin has not changed
+			if(first_post_for_this_form) {
+				// but we need to add it anyway
+				optins_changed = true;
+				changed_optins[optin_id] = user_optins[optin_id];
+			}
+		}
+	}
+	if(optins_changed) {
+		return changed_optins;
+	} else {
+		return false;
+	}
+};
+
+
+//
+// gets current state of optin choices for a cform and updates the user_choice key in the custom_form.opt_ins object
+// returns an array of optins & user choice for each
+//
+AEJSWP.getUserOptinChoices = function(cform_id, restoreState, hash) {
+	if (typeof restoreState === 'undefined' || restoreState) {
+		AEJSWP.restoreUserOptins();	// restore any stored states before getting current state
+	}
+
+	const container = (typeof hash !== 'undefined' ? jQuery(`.${hash}`) : 
+		(
+			jQuery(`#ae-cform-modal-container-${cform_id}:visible`).length > 0 ?
+			jQuery(`#ae-cform-modal-container-${cform_id}`) :
+			jQuery(`#ae-cform-container-${cform_id}`)
+		)
+	);
+	var optins = AEJSWP.custom_forms[cform_id]['opt_ins'];	// will modify the original object (pass by reference)
+	var optin_choices = {};
+	for(var optin in optins) {
+		
+		let containerObj = (container.length > 0 ?
+			jQuery(container).find('#ac-cform-optin-checkbox-' + cform_id + '-' + optins[optin]['id']) : 
+			jQuery('#ac-cform-optin-checkbox-' + cform_id + '-' + optins[optin]['id'])
+		);
+
+		// get user's current choice & add to return object
+		const isEnabled = containerObj.is(":enabled");
+		const isChecked = containerObj.is(":checked");
+        let optinType = '';
+        if (containerObj.data('email') === 1) {
+            optinType = 'email';
+        } else if (containerObj.data('sms') === 1) {
+            optinType = 'sms';
+        }
+        optins[optin]['user_choice'] = isEnabled && isChecked
+		optin_choices[optin] = {
+			optin_id: optins[optin]['id'],
+			user_choice: optins[optin]['user_choice'],
+			disabled: !isEnabled,
+			type: optinType
+		};
+
+		// update state in local storage - this capture as the choice if the user didn't interact with the checkboxes (left at default)
+		let current_optin_choices = AEJSWP.getLocalStorageItem('aejswp_optin_choices', true);
+		if (!current_optin_choices) {
+			current_optin_choices = []
+		}
+		current_optin_choices[optins[optin]['id']] = optins[optin]['user_choice'];
+		AEJSWP.setLocalStorageItem('aejswp_optin_choices', current_optin_choices, true);
+	}
+	AEJSWP.setLocalStorageItem('aejswp_cform_hash', hash, true);
+	AEJSWP.debugOutput('getUserOptinChoices', optin_choices);
+	return optin_choices;
+};
+
+//
+// cleanup after custom form flow completes
+// immediate = true - clear state immediately
+// immediate = false - clear state after 1ms delay, to decouple from ae event handlers (default)
+//
+AEJSWP.clearCustomFormState = function(immediate) {
+	doClearState = function() {
+		AEJSWP.debugOutput('Custom Form flow ended, clearing state, immediate = ' + immediate);
+		// revert aeJS settings back to default
+		AEJSWP.aeJS.settings['display_error_message'] = true;
+		AEJSWP.aeJS.settings['extra_fields_screen'] = AEJSWP.extra_fields_screen;
+		AEJSWP.aeJS.settings['extra_fields'] = AEJSWP.extra_fields;
+		AEJSWP.aeJS.settings['services'] = AEJSWP.services;
+		AEJSWP.aeJS.settings['return_url'] = (AEJSWP.getSessionStorageItem('aejswp_cform_prev_return_url')) ? AEJSWP.getSessionStorageItem('aejswp_cform_prev_return_url') : AEJSWP.aeJS.settings['return_url'];
+		AEJSWP.aeJS.settings['auth_window'] = (AEJSWP.getSessionStorageItem('aejswp_cform_prev_auth_window')) ? AEJSWP.getSessionStorageItem('aejswp_cform_prev_auth_window') : AEJSWP.aeJS.settings['auth_window'];
+		AEJSWP.aeJS.settings['extra_fields'] = (AEJSWP.getSessionStorageItem('aejswp_cform_prev_extra_fields')) ? AEJSWP.getSessionStorageItem('aejswp_cform_prev_extra_fields',true) : AEJSWP.aeJS.settings['auth_window'];
+
+		// clear session storage state
+		AEJSWP.removeLocalStorageItem('aejswp_cform_id');
+		AEJSWP.removeLocalStorageItem('aejswp_cform_hash');
+		AEJSWP.removeSessionStorageItem('aejswp_cform_prev_return_url');
+		AEJSWP.removeSessionStorageItem('aejswp_cform_prev_auth_window');
+		AEJSWP.removeSessionStorageItem('aejswp_cform_prev_extra_fields');
+		AEJSWP.removeSessionStorageItem('aejswp_user_cancelled_cform_modal_display');
+		AEJSWP.removeSessionStorageItem('aejswp_user_opened_cform_modal_display');
+		AEJSWP.removeSessionStorageItem('aejswp_verify_email_in_progress');
+		AEJSWP.removeSessionStorageItem('aejswp_verify_email_sent');
+		AEJSWP.removeSessionStorageItem('aejswp_password_reset_in_progress');
+		AEJSWP.removeSessionStorageItem('aejswp_password_reset_email');
+		AEJSWP.removeSessionStorageItem('aejswp_password_reset_member_service_id');
+		AEJSWP.removeSessionStorageItem('aejswp_password_reset_force_modal_open');
+		AEJSWP.removeSessionStorageItem('aejswp_user_casl_in_progress');
+
+        // reset the captcha widget
+        if (typeof grecaptcha !== 'undefined') {
+            grecaptcha.reset();
+        }
+	}
+	// only clear if we have something to clear
+	if(AEJSWP.getLocalStorageItem('aejswp_cform_id')) {
+		if(immediate) {
+			// when ending the custom form flow we need to clear this state without delay,
+			// if we keep the delay, this doesn't get run when when a redirectLogin happens (page is redirected away from before the delayed function can run)
+			doClearState();
+		} else {
+			// if we reset aeJS settings inside event handlers, the widget error window can pop up (framework internal handlers must run after our registered handlers)
+			// so we add a tiny delay to decouple our clearCustomFormState from the event handler (1 millisecond is enough)
+			setTimeout(doClearState, 1);
+		}
+	}
+};
+
+//
+// display password reset sent message
+//
+AEJSWP.displayPasswordResetEmailSent = function() {
+	var cform_id = AEJSWP.getLocalStorageItem('aejswp_cform_id');
+	const hash = AEJSWP.getLocalStorageItem('aejswp_cform_hash');
+	const container = jQuery(`.${hash}`);
+	// show sent instructions
+	var html = '<div class="ae-cform-pasword-reset-instruictions-inner">' + AEJSWP.custom_forms[cform_id]['flow_labels']['reset_password_instructions_sent'] + '</div>';
+	html += '<div class="ae-cform-form-links"><a href="#" class="ae-cform-reset-password-cancel-link" id="ae-cform-reset-password-cancel-link-' + cform_id + '" href="#" data-ae-cform-id="' + cform_id + '">'
+	html += AEJSWP.custom_forms[cform_id]['flow_labels']['cancel_button'];
+	html += '</a></div>';
+	jQuery('#ae-cform-reset-password-instruction-' + cform_id).html( html );
+	// hide the password send button and email input field & login/register with existing account links
+	jQuery(container).find('#ae-cform-reset-password-submit-' + cform_id).hide();
+	jQuery(container).find('#ae-cform-reset-password-email-' + cform_id).hide();
+	jQuery(container).find('#ae-cform-reset-password-login-link-' + cform_id).hide();
+	jQuery(container).find('#ae-cform-reset-password-register-link-' + cform_id).hide();
+	// add cancel button click handler
+	jQuery(container).find('.ae-cform-reset-password-cancel-link').click(function(event) {
+		event.preventDefault();
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		jQuery(container).find('#ae-cform-email-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-reset-password-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-title-' + cform_id).slideDown();
+		jQuery(container).find('#ae-cform-signin-options-' + cform_id).slideDown();
+		// re-show opt-ins
+		jQuery(container).find('#ae-cform-optins-container-' + cform_id).slideDown();
+		// reset password-reset state
+		AEJSWP.clearPasswordResetState();
+	});
+};
+
+//
+// display enter new password panel
+//
+AEJSWP.displayEnterNewPassword = function() {
+	AEJSWP.debugOutput('Showing password reset step 2');
+	var cform_id = AEJSWP.getLocalStorageItem('aejswp_cform_id');
+	jQuery('#ae-cform-email-container-' + cform_id).hide();
+	jQuery('#ae-cform-title-' + cform_id).hide();
+	jQuery('#ae-cform-signin-options-' + cform_id).hide();
+	jQuery('#ae-cform-reset-password-step1-' + cform_id).hide();
+	jQuery('#ae-cform-reset-password-login-link-' + cform_id).hide();
+	jQuery('#ae-cform-reset-password-register-link-' + cform_id).hide();
+	jQuery('#ae-cform-reset-password-step2-' + cform_id).show();
+	jQuery('#ae-cform-reset-password-container-' + cform_id).show();
+	// hide opt-ins
+	jQuery('#ae-cform-optins-container-' + cform_id).hide();
+};
+
+//
+// display password reset success
+//
+AEJSWP.displayPasswordResetSuccess = function() {
+	AEJSWP.debugOutput('Showing password reset success');
+	var cform_id = AEJSWP.getLocalStorageItem('aejswp_cform_id');
+	jQuery('#ae-cform-reset-password-step2-' + cform_id).hide();
+	jQuery('#ae-cform-reset-password-step3-' + cform_id).show();
+	jQuery('#ae-cform-reset-password-login-link-' + cform_id).show();
+};
+
+//
+// clear password reset session
+//
+AEJSWP.clearPasswordResetState = function() {
+	AEJSWP.debugOutput('Clearing password reset state');
+	AEJSWP.removeSessionStorageItem('aejswp_password_reset_in_progress');
+	AEJSWP.removeSessionStorageItem('aejswp_password_reset_email');
+	AEJSWP.removeSessionStorageItem('aejswp_password_reset_member_service_id');
+	AEJSWP.removeSessionStorageItem('aejswp_password_reset_force_modal_open');
+};
+
+// updates all optin labels across all forms to show/hide CASL alt labels
+// canadian_user = true, shows CASL versions
+// canadian_user = false, shows standard versions
+//
+AEJSWP.updateCaslLabels = function(canadian_user) {
+	if(canadian_user) {
+		// show casl alt version
+		jQuery('.ae-cform-optin-label-non-casl').hide();
+		jQuery('.ae-cform-optin-terms-non-casl').hide();
+		jQuery('.ae-cform-optin-label-casl').show();
+		jQuery('.ae-cform-optin-terms-casl').show();
+		// uncheck optins
+		jQuery('.ae-cform-optin-checkbox').attr('checked', false);
+	} else {
+		jQuery('.ae-cform-optin-label-non-casl').show();
+		jQuery('.ae-cform-optin-terms-non-casl').show();
+		jQuery('.ae-cform-optin-label-casl').hide();
+		jQuery('.ae-cform-optin-terms-casl').hide();
+	}
+};
+
+//
+// display reg form
+//
+AEJSWP.displayRegistrationForm = function(cform_id, hash) {
+	jQuery(`.ae-cform-container.${hash}, .ae-cform-modal-container.${hash}`).find('#ae-cform-email-login-container-' + cform_id).slideToggle();
+	jQuery(`.ae-cform-container.${hash}, .ae-cform-modal-container.${hash}`).find('#ae-cform-email-reg-container-' + cform_id).slideToggle();
+	// fire registrationModalShown event
+	var cta = AEJSWP.custom_forms[cform_id]['modal_display_cta'];
+	AEJSWP.trackEvent('registrationModalShown', cta);
+};
+
+//
+// hides captcha field on a custom form
+//
+AEJSWP.hideCaptchaOnForm = function(cform_id) {
+	AEJSWP.debugOutput('Hiding captcha field on form ' + cform_id);
+	jQuery('#ae-cform-captcha-' + cform_id).hide();
+};
+
+//
+// Callback function fired once a user has interacted with a captcha on the page.
+// There's no way to identify which captcha has been fired from the callback supplied by reCAPTCHA
+// So, we'll verify any form configured and set a tracking value to be checked on form submit.
+//
+AEJSWP.captchaVerifyCallback = function(cform_id, hash) {
+	// AEJSWP.debugOutput('Google reCAPTCHA: Calling for token check across custom forms.');
+	// No way of identifying validation triggered. Loop through all custom forms configured.
+	// jQuery('.ae-cform-container').each(function( form ) {
+		AEJSWP.debugOutput(`Google reCAPTCHA: Check form ${cform_id} and hash ${hash}`);
+		// Check if this custom form has a captcha element and that it hasn't previously been verified.
+		if (typeof AEJSWP.custom_forms[cform_id].captcha_widget != 'undefined' && !AEJSWP.custom_forms[cform_id].captchaVerified) {
+			if( parseInt(AEJSWP.custom_forms[cform_id]['type_id']) == 2 ) {
+				// for mailing list form don't make the captcha verify ajax call - instead we'll do that at the time of the optins post
+				AEJSWP.debugOutput('Google reCAPTCHA completed, but deferring validation until form optins submitted');
+				AEJSWP.custom_forms[cform_id].captchaVerified = true;
+                AEJSWP.customFormSubmit(AEJSWP.customFormEventFormID, AEJSWP.customFormEvent, hash);
+			} else {
+				// sign-in form
+				jQuery.ajax({
+					url: AEJSWP.ajaxurl,
+					method: "POST",		// for older versions of jquery
+					type: "POST",
+					dataType: "json",
+					data: {
+						'action': AEJSWP.ajax_action_user_check_captcha,
+						'sitekey' : AEJSWP.custom_forms[cform_id]['recaptcha_key'],
+						'confirmcode' : grecaptcha.getResponse(AEJSWP.custom_forms[cform_id].captcha_widget),
+						'formid' : cform_id
+					},
+					success: function( result ) {
+						AEJSWP.debugOutput('Google reCAPTCHA: Response ' + result.success);
+						if ( result.success == true) {
+							AEJSWP.debugOutput('Google reCAPTCHA: Custom form ' + cform_id + ' validated');
+							AEJSWP.custom_forms[cform_id].captchaVerified = true;
+						} else {
+							AEJSWP.debugOutput('Google reCAPTCHA: failed (not validated)');
+							AEJSWP.custom_forms[cform_id].captchaVerified = false;
+						}
+					},
+			    error: function(xhr, textStatus, errorThrown) {
+						AEJSWP.debugOutput('Google reCAPTCHA: failed (AJAX Failed) ' + textStatus);
+						AEJSWP.custom_forms[cform_id].captchaVerified = false;
+			    }
+				});
+			}
+		}
+	// });
+}
+
+/**
+ * Open custom form modal open
+ * @param cform_id
+ */
+AEJSWP.triggerCustomFormModal = function(cform_id, hash) {
+	var modalContainer = jQuery(`.ae-cform-modal-container.${hash}`);
+	if(modalContainer.length) {
+
+        // open the modal window
+		modalContainer.modal();
+        // set state so we know user has opened modal
+        var user_opened_modals = (AEJSWP.getSessionStorageItem('aejswp_user_opened_cform_modal_display', true)) ? AEJSWP.getSessionStorageItem('aejswp_user_opened_cform_modal_display', true) : [];
+        user_opened_modals[cform_id] = true;
+        AEJSWP.setSessionStorageItem('aejswp_user_opened_cform_modal_display', user_opened_modals, true);
+        // reset the state which stops auto-popup on page load
+        var user_cancelations = (AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display')) ? AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display', true) : [];
+        user_cancelations[cform_id] = false;
+        AEJSWP.setSessionStorageItem('aejswp_user_cancelled_cform_modal_display', user_cancelations, true);
+
+		//trigger event for modal open
+		modalContainer.trigger('ae-modal-open');
+
+        // fire loginModalShown event
+        var cta = AEJSWP.custom_forms[cform_id]['modal_display_cta'];
+        AEJSWP.trackEvent('loginModalShown', cta);
+
+		AEJSWP.updateCustomForms()
+	}
+};
+
+// Callback function for google reCAPTCHA - Fired when the script completes loading on the page.
+var onCaptchaloadCallback = function() {
+	// Use this to notify the AEJSWP object that we can now render reCAPTCHA elements correctly
+    // this is the method for external devs to add their own captchas to the page at the same time as AE
+	AEJSWP.debugOutput('Google reCAPTCHA script loaded correctly.');
+	AEJSWP.custom_forms.captchaLoadComplete = true;
+
+    // Developer captcha
+	if(typeof additionalCaptchaOnLoadCallback === "function") {
+        AEJSWP.debugOutput('Developer callback initiated.');
+		developerCaptchaWidget = additionalCaptchaOnLoadCallback();
+    }
+    // AE Custom Form captcha
+    var cforms = jQuery('.ae-cform-container');
+    AEJSWP.customFormRenderRecaptcha(cforms);
+
+    // Add aria-hidden labels to recaptcha element so that it doesn't trigger ADA compliance warning
+    jQuery('#g-recaptcha-response').attr('aria-hidden', true);
+    jQuery('#g-recaptcha-response').attr('aria-label', 'do not use');
+    jQuery('#g-recaptcha-response').attr('aria-readonly', true);
+};
+
+//init captcha if callback from Google reCaptcha was before this script was loaded (i.e. we missed it!)
+if (typeof grecaptcha !== 'undefined' && typeof grecaptcha.render !== 'undefined') {
+	onCaptchaloadCallback()
+}
+
+/**
+ * Retrive the custom form ID from given CTA element
+ * - only used for Custom CTA elements
+ * @param jQuery Element
+ * @param int default_id (= 1)
+ */
+AEJSWP.getCustomCTAFormID = function(element, default_id) {
+
+	//if default ID not specified then fetch the first cform and use it's ID
+	if(typeof default_id === 'undefined') {
+		default_id = jQuery('.ae-cform-container').first().attr('data-ae-cform-id');
+	}
+
+	var cform_id = default_id;
+
+    var cta_classes = jQuery(element).attr('class');
+
+    //determine the cta form id
+    if(jQuery(element).attr('data-form-id')) {
+
+        //cta has a data attribute with form id
+        cform_id = jQuery(element).attr('data-form-id');
+
+    } else if(cta_classes.length && cta_classes.includes('ae-form-id-')) {
+
+        //check if cta has a class with form id
+        var cta_class_list = cta_classes.split(/\s+/);
+        if(cta_class_list.length) {
+            for(var i = 0; i < cta_class_list.length; i++) {
+                if(cta_class_list[i].includes('ae-form-id-')) {
+                    //remove the form id prefix to get the full id
+                    cform_id = cta_class_list[i].replace('ae-form-id-', '');
+                }
+            }
+        }
+    }
+
+    return cform_id;
+};
+
+//
+// click handlers and other listeners that handle form state change
+//
+AEJSWP.addCustomFormListeners = function() {
+
+	jQuery('.ae-cform-social-link').on('click', function(e) {
+		e.preventDefault()
+
+		const container = jQuery(this).parents('[data-ae-cform-id]')
+		const hash = jQuery(container).data('hash-selector')
+		if (!container.length) {
+			return false
+		}
+
+		const cformId = container.attr('data-ae-cform-id')
+		const emailContainer = jQuery(container).find('#ae-cform-email-container-' + cformId)
+
+		if (jQuery(this).hasClass('email') && emailContainer.length) {
+			emailContainer.find("form > *:not('.ae-cform-error-block')").show()
+		}
+
+		if (jQuery(this).hasClass('ae-cform-social-disabled')) {
+			const checkedOptins = AEJSWP.getCheckedOptins(cformId, hash)
+			if (checkedOptins.length === 0) {
+				const form = jQuery(container).find("#ae-cform-email-reg-" + cformId);
+				const formIncompleteError = AEJSWP.custom_forms[cformId]['flow_labels']['form_error_incomplete_optins']
+				AEJSWP.debugOutput('Opt-ins not selected');
+				// Display error to user
+				AEJSWP.setFormError(form, formIncompleteError);
+				// fire formErrors event, passing the error message
+				AEJSWP.fireFormErrorsEvent('mailinglist', [formIncompleteError]);
+				if (emailContainer.length && !emailContainer.is(':visible')) {
+					emailContainer.find("form > *:not('.ae-cform-error-block')").hide()
+					emailContainer.slideToggle()
+				}
+				return false
+			}
+		}
+		return true
+	})
+
+	//listen out for modal open event
+	jQuery('.ae-cform-modal-container').each(function() {
+
+		const hash = jQuery(this).data('hash-selector')
+		const id = jQuery(this).attr('id')
+		const _this = this
+		jQuery(this).on('ae-modal-open', function() {
+
+			//auto color for term links and optin labels
+			var elements = jQuery('.ae-cform-optin-terms a, .ae-cform-optins-container .ae-cform-optin-label, #terms, #sms-terms', jQuery(this));
+
+			AEJSWP.setAutoColors(elements);
+
+		});
+	});
+
+	// attach event listeners to custom CTAs
+	jQuery('.ae-custom-cta ').on('click', function(e) {
+		e.preventDefault();
+
+		//get the cform ID for which this CTA is configured
+		//cform ID can either be specified in the element class (e.g. ae-form-id-1) or as attribute (e.g. data-form-id="1")
+		//if cform ID not specified then we grab the form ID of the first custom form we find on page
+		var cform_id = AEJSWP.getCustomCTAFormID(jQuery(this));
+		// TODO: Possibly change method here
+		var hash = jQuery(this).data('hash-selector');
+
+		if (typeof hash === 'undefined'){
+			hash = jQuery('#ae-cform-modal-display-cta-' + cform_id).data('hash-selector');
+		}
+
+		//trigger custom form modal window to open
+        AEJSWP.triggerCustomFormModal(cform_id, hash);
+	});
+
+	// already registered link
+	jQuery('.ae-cform-already-registered-link').click(function(event) {
+		event.preventDefault();
+		const container = (jQuery(this).parents('.ae-cform-container').length > 0 ? jQuery(this).parents('.ae-cform-container') : jQuery(this).parents('.ae-cform-modal-container'));
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		jQuery(container).find('#ae-cform-email-login-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-email-reg-container-' + cform_id).slideToggle();
+	});
+	// not yet registered link
+	jQuery('.ae-cform-not-registered-link').click(function(event) {
+		event.preventDefault();
+		const hash = (jQuery(this).parents('.ae-cform-container').length > 0 ? jQuery(this).parents('.ae-cform-container').data('hash-selector') : jQuery(this).parents('.ae-cform-modal-container').data('hash-selector'));
+		AEJSWP.displayRegistrationForm( parseInt(jQuery(this).data('ae-cform-id')), hash ); // TODO: Change method here
+	});
+	// forgot password link
+	jQuery('.ae-cform-forgot-password-link').click(function(event) {
+		event.preventDefault();
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		const container = (jQuery(this).parents('.ae-cform-container').length > 0 ? jQuery(this).parents('.ae-cform-container') : jQuery(this).parents('.ae-cform-modal-container'));
+
+		jQuery(container).find('#ae-cform-email-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-reset-password-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-title-' + cform_id).slideUp();
+		jQuery(container).find('#ae-cform-signin-options-' + cform_id).slideUp();
+		// grab email from login form
+		jQuery(container).find('#reset-password-email-' + cform_id).val( jQuery('#ae-cform-input-login-email-' + cform_id).val() );
+		// hide opt-ins
+		jQuery(container).find('#ae-cform-optins-container-' + cform_id).slideUp();
+	});
+	// reset password login link
+	jQuery('.ae-cform-reset-password-login-link').click(function(event) {
+		event.preventDefault();
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		const container = (jQuery(this).parents('.ae-cform-container').length > 0 ? jQuery(this).parents('.ae-cform-container') : jQuery(this).parents('.ae-cform-modal-container'));
+
+		jQuery(container).find('#ae-cform-email-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-reset-password-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-title-' + cform_id).slideDown();
+		jQuery(container).find('#ae-cform-signin-options-' + cform_id).slideDown();
+		// re-show opt-ins
+		jQuery(container).find('#ae-cform-optins-container-' + cform_id).slideDown();
+		// reset password-reset state
+		AEJSWP.clearPasswordResetState();
+	});
+	// reset password register link
+	jQuery('.ae-cform-reset-password-register-link').click(function(event) {
+		event.preventDefault();
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		const container = (jQuery(this).parents('.ae-cform-container').length > 0 ? jQuery(this).parents('.ae-cform-container') : jQuery(this).parents('.ae-cform-modal-container'));
+
+		jQuery(container).find('#ae-cform-email-login-container-' + cform_id).hide();	// hide login form
+		jQuery(container).find('#ae-cform-email-reg-container-' + cform_id).show();	// shoe reg form instead
+		jQuery(container).find('#ae-cform-email-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-reset-password-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-title-' + cform_id).slideDown();
+		jQuery(container).find('#ae-cform-signin-options-' + cform_id).slideDown();
+		// re-show opt-ins
+		jQuery(container).find('#ae-cform-optins-container-' + cform_id).slideDown();
+		// reset password-reset state
+		AEJSWP.clearPasswordResetState();
+	});
+	// reset password cancel link
+	jQuery('.ae-cform-reset-password-cancel-link').click(function(event) {
+		event.preventDefault();
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		const container = (jQuery(this).parents('.ae-cform-container').length > 0 ? jQuery(this).parents('.ae-cform-container') : jQuery(this).parents('.ae-cform-modal-container'));
+
+		jQuery(container).find('#ae-cform-email-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-reset-password-container-' + cform_id).slideToggle();
+		jQuery(container).find('#ae-cform-title-' + cform_id).slideDown();
+		jQuery(container).find('#ae-cform-signin-options-' + cform_id).slideDown();
+		// re-show opt-ins
+		jQuery(container).find('#ae-cform-optins-container-' + cform_id).slideDown();
+		// reset password-reset state
+		AEJSWP.clearPasswordResetState();
+	});
+	// resend verify email
+	jQuery('.ae-cform-verify-email-resend-link').click(function(event) {
+		event.preventDefault();
+		if(AEJSWP.getSessionStorageItem('aejswp_verify_email_in_progress')) {
+			AEJSWP.sendVerifyEmail(AEJSWP.getSessionStorageItem('aejswp_verify_email_in_progress'));
+		}
+	});
+	// cancel verify email
+	jQuery('.ae-cform-verify-email-cancel-link').click(function(event) {
+		event.preventDefault();
+		// clear AE user session
+		AEJSWP.aeJS.trigger.logout();
+		// clear plugin state
+		AEJSWP.removeSessionStorageItem('aejswp_verify_email_in_progress');
+		AEJSWP.removeSessionStorageItem('aejswp_verify_email_sent');
+		// close verify email panel and re-open login form elements
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		const container = (jQuery(this).parents('.ae-cform-container').length > 0 ? jQuery(this).parents('.ae-cform-container') : jQuery(this).parents('.ae-cform-modal-container'));
+
+		jQuery(container).find('#ae-cform-verify-email-container-' + cform_id).hide();
+		jQuery(container).find('#ae-cform-title-' + cform_id).show();
+		jQuery(container).find('#ae-cform-signin-options-' + cform_id).show();
+		jQuery(container).find('#ae-cform-email-container-' + cform_id).show();
+		jQuery(container).find('#ae-cform-optins-container-' + cform_id).show();
+	});
+	// reset password submit
+	jQuery('.ae-cform-reset-password-submit').click(function(event) {
+		AEJSWP.debugOutput('Password reset flow started');
+		event.preventDefault();
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		const container =(jQuery(this).parents('.ae-cform-container').length > 0 ? jQuery(this).parents('.ae-cform-container') : jQuery(this).parents('.ae-cform-modal-container'));
+		const hash = jQuery(container).data('hash-selector');
+		var email = jQuery(container).find('#reset-password-email-' + cform_id).val();
+		AEJSWP.applyCustomFormSettings(cform_id, event, hash);		// apply cform aeJS settings
+		AEJSWP.setSessionStorageItem('aejswp_password_reset_in_progress', true);
+		AEJSWP.sendVerifyEmail(email, cform_id);	// adds password_reset=cform_id to return_url
+	});
+	// update password submit
+	jQuery('.ae-cform-update-password-submit').click(function(event) {
+		event.preventDefault();
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		const container = (jQuery(this).parents('.ae-cform-container').length > 0 ? jQuery(this).parents('.ae-cform-container') : jQuery(this).parents('.ae-cform-modal-container'));
+		var password = jQuery(container).find('#reset-password-password-' + cform_id).val();
+		// run parseley validation
+		jQuery(container).find('#reset-password-password-' + cform_id).parsley().validate();
+		jQuery(container).find('#reset-password-password-confirm-' + cform_id).parsley().validate();
+		if (
+			jQuery(container).find('#reset-password-password-' + cform_id).parsley().isValid()
+			&& jQuery(container).find('#reset-password-password-confirm-' + cform_id).parsley().isValid()
+		) {
+			var email = AEJSWP.getSessionStorageItem('aejswp_password_reset_email');
+			var member_service_id = AEJSWP.getSessionStorageItem('aejswp_password_reset_member_service_id');
+			AEJSWP.debugOutput('Updating user password for:' + email + ', member_service_id ' + member_service_id);
+			AEJSWP.aeJS.trigger.reset_password(member_service_id, email, password);
+		}
+	});
+
+	// if optin present and unchecked, disable register field - this will be checked again when optin checkbox state changes.
+	if (jQuery('.ae-cform-optin-checkbox').length) {
+		jQuery('.ae-cform-optin-checkbox').each(function() {
+			if (!jQuery(this).is(':checked')) {
+				var cform_id = jQuery(this).data("ae-cform-id");
+				var cform_type_id = parseInt(AEJSWP.custom_forms[cform_id]['type_id']);
+				AEJSWP.debugOutput('Optin ' +  jQuery(this).data("ae-cform-id") + ' is not checked');
+				// GDRP - Stop pre-checking of user opt-ins. Only applied to Sign-up form. (Added by AB 01-10-2018)
+				if(cform_type_id == 2) {
+					AEJSWP.enableSignUpFormSubmitButtons(jQuery(this).data('ae-optin-id'), cform_id, false); // TODO: ??
+				}
+
+			}
+		});
+	}
+
+	// optin change
+	jQuery('.ae-cform-optin-checkbox').change(function(event) {
+		event.preventDefault();
+        var cform_id = jQuery(this).data("ae-cform-id");
+        const hash = jQuery(this).parents('[data-ae-cform-id][data-hash-selector]').data('hash-selector');
+
+        if (event.originalEvent) {
+			//remove pre-check attribute after manual check
+			jQuery(this).removeAttr('data-pre-check')
+		}
+
+		// do not run if this is related artist optin as the parent optin needs to be checkd for it to submit
+		var optin_id = (typeof jQuery(this).data('ae-optin-id') == 'string' && jQuery(this).data('ae-optin-id').indexOf("similar-artists") > 0 ? 'similar-artists' : parseInt(jQuery(this).data('ae-optin-id')));
+		if (optin_id == 'similar-artists') {
+			return;
+		}
+
+        AEJSWP.updateRelatedField(cform_id, jQuery(this))
+
+		var cform_type_id = parseInt(AEJSWP.custom_forms[cform_id]['type_id']);
+		if(cform_type_id == 2) {
+			AEJSWP.debugOutput('Optin ' +  jQuery(this).data("ae-optin-id") + ' has been ' + (jQuery(this).is(':checked') ? 'checked' : 'unchecked'));
+			AEJSWP.enableSignUpFormSubmitButtons(jQuery(this).data('ae-optin-id'), cform_id, jQuery(this).is(':checked'), hash);
+		}
+		// store the optin state in local storage
+		var optin_choices = AEJSWP.getLocalStorageItem('aejswp_optin_choices', true);
+		if(!optin_choices) {
+            optin_choices = [];
+		}
+		optin_choices[optin_id] = jQuery(this).is(":checked");
+		AEJSWP.setLocalStorageItem('aejswp_optin_choices', optin_choices, true);
+		AEJSWP.setLocalStorageItem('aejswp_cform_hash', hash, true);
+	});
+	//Birthday - update birthdate hidden input from the 3 separate inputs
+	jQuery("input[name*='s_birthdate']").on("input", function() {
+		AEJSWP.updateDOB(); // TODO: ??
+	});
+	//Birthday - add day and month zero padding (i.e. turn 3 to 03)
+	jQuery("input[name='s_birthdate_day'],input[name='s_birthdate_month']").on("blur", function() {
+		var val = AEJSWP.padString(jQuery(this).val(), 2);
+		if(val != jQuery(this).val() && jQuery(this).val() != "") {
+			jQuery(this).val(val);
+		}
+	});
+	// country change - update for CASL compliance if Canada selected
+	jQuery('.ae-cform-input-country').change(function() {
+		var country_id = jQuery(this).val();
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		var casl_enabled = (AEJSWP.custom_forms[cform_id]['opt_ins_casl_enabled'] == '1') ? true : false;
+		if(country_id == 'CA' && casl_enabled) {
+			AEJSWP.debugOutput('CASL enabled & user selected Canada, updating opt-ins & terms for CASL compliance');
+			AEJSWP.updateCaslLabels(true);
+			// user has completed casl flow
+			AEJSWP.debugOutput('User completed CASL compliance flow, updating state');
+			var user_casl_completed = ( AEJSWP.getLocalStorageItem('aejswp_user_casl_completed', true) ) ? AEJSWP.getLocalStorageItem('aejswp_user_casl_completed', true) : [];		// array of forms where user has already completed casl flow
+			user_casl_completed[cform_id] = true;
+			AEJSWP.removeSessionStorageItem('aejswp_user_casl_in_progress');		// they've just completed it
+			AEJSWP.setLocalStorageItem('aejswp_user_casl_completed', user_casl_completed, true);		// we only do CASL flow once per form
+		}
+		if(country_id != 'CA' && casl_enabled) {
+			AEJSWP.debugOutput('CASL enabled, but user selected another country, updating opt-in terms for non-CASL');
+			AEJSWP.updateCaslLabels(false);
+		}
+
+		//update pre-check states of opt-in checkboxes depending on selected country (e.g. US = can pre-check)
+		AEJSWP.updateOptinChecks(cform_id, country_id)
+	});
+	// modal display call to action link
+	jQuery('.ae-cform-modal-display-cta').click(function(event) {
+		event.preventDefault();
+		var cform_id = parseInt(jQuery(this).data('ae-cform-id'));
+		const hash = jQuery(this).data('hash-selector');
+
+		//run function to trigger the modal open
+        AEJSWP.triggerCustomFormModal(cform_id, hash);
+	});
+	// modal window close button event (need to check for modal plugin as it may not be included on page if not used)
+	if(typeof(jQuery.modal) != 'undefined') {
+		jQuery('.ae-cform-modal-container').on(jQuery.modal.OPEN, function(event, modal) {
+			jQuery('.close-modal').click(function() {
+				// NB: we can't use the jQuery.modal.CLOSE event here as that is also fired when modal is programatically closed - we need to trap the user action
+				AEJSWP.debugOutput('Modal closed by user');
+				var cform_id = AEJSWP.getLocalStorageItem('aejswp_cform_id');
+				if(cform_id) {
+					// store the user modal close in session, so we don't keep popping it up every page load - they can restart flow at any time by clikcing the CTA again
+					AEJSWP.debugOutput('storing the closure in session storage to avoid re-popping the modal up to the user on page refresh');
+					var user_cancelations = (AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display')) ? AEJSWP.getSessionStorageItem('aejswp_user_cancelled_cform_modal_display', true) : [];
+					user_cancelations[cform_id] = true;
+					AEJSWP.setSessionStorageItem('aejswp_user_cancelled_cform_modal_display', user_cancelations, true);
+				}
+			});
+		});
+	}
+};
+
+AEJSWP.updateOptinChecks = function (cform_id, country_id) {
+	const precheckCountries = ['US', 'UM']
+	const container = jQuery('[data-ae-cform-id="' + cform_id + '"]')
+	if (container.length) {
+		jQuery('.ae-cform-optin-checkbox', container).each(function() {
+			if (jQuery(this).attr('data-pre-check')) {
+				if (precheckCountries.includes(country_id)) {
+					jQuery(this).prop('checked', 'checked')
+				} else {
+					jQuery(this).prop('checked', false)
+				}
+				AEJSWP.updateRelatedField(cform_id, jQuery(this))
+			}
+		})
+	}
+}
+
+AEJSWP.updateRelatedField = function (cform_id, field) {
+	// handle checkboxes that control dynamic mandatory fields
+	const isChecked = jQuery(field).is(':checked')
+	var related_field = jQuery(field).data('ae-optin-related-field');
+	const hash = jQuery(field).parents('.ae-cform-container,.ae-cform-modal-container').data('hash-selector');
+	if (typeof related_field !== 'undefined') {
+		var dynamic_field = jQuery(`.${hash}`).find('#ae-cform-reg-item-' + related_field + '-' + cform_id);
+		let isAlwaysRequired =
+			typeof AEJSWP.custom_forms[cform_id]['form_fields'][related_field] !== 'undefined'
+			&& Object.values(AEJSWP.custom_forms[cform_id]['form_fields'][related_field])[0] === "1"
+
+		const otherRelatedFields = jQuery(`.${hash}`).find('[data-ae-optin-related-field="' + related_field + '"]:checked');
+		if (otherRelatedFields.length > 0) {
+			isAlwaysRequired = true
+		}
+
+		jQuery(`.${hash}`).find('.ae-cform-input[name="' + related_field + '"]').attr('required', function(index, attr){
+			return isChecked || isAlwaysRequired ? 'required' : false;
+		});
+
+		if (isChecked || isAlwaysRequired) {
+			if (!jQuery(dynamic_field).find('.cform-required-field').length) {
+				const label = jQuery(dynamic_field).find('label')
+				const requiredLabel = jQuery(
+					'<div class="cform-required-field"><span>* </span>' + label.html() + '</div>'
+				)
+				jQuery(label).empty().append(requiredLabel)
+			} else {
+				jQuery(dynamic_field)
+					.find('label div:first')
+					.removeClass('hidden')
+					.find('span:first')
+					.removeClass('hidden')
+			}
+		} else {
+			jQuery(dynamic_field)
+				.find('label div:first')
+				.addClass('hidden')
+				.find('span:first')
+				.addClass('hidden')
+		}
+
+		var dynamic_enabled_setting = dynamic_field.attr('data-dynamic-field') == 'disabled' ? 'enabled' : 'disabled';
+		if (dynamic_field.attr('data-dynamic-field-visibility') == 'visible') {
+			var dynamic_cform_field = AEJSWP.custom_forms[cform_id]['form_fields'][related_field];
+			AEJSWP.custom_forms[cform_id]['form_fields'][related_field][Object.keys(dynamic_cform_field)[0]] = Object.values(dynamic_cform_field)[0] == 0 ? 1 : 0;
+			jQuery(dynamic_field)
+				.attr('data-dynamic-field', dynamic_enabled_setting)
+				.find('label .cform-required-field').toggleClass('hidden')
+				.find('span:first').toggleClass('hidden');
+		} else if (dynamic_field.attr('data-dynamic-field-visibility') == 'conditional') {
+			var dynamic_cform_field = AEJSWP.custom_forms[cform_id]['form_fields'][related_field];
+			AEJSWP.custom_forms[cform_id]['form_fields'][related_field][Object.keys(dynamic_cform_field)[0]] = Object.values(dynamic_cform_field)[0] == 0 ? 1 : 0;
+			var show = !dynamic_field.is(":visible");
+			if (show) {
+				jQuery(dynamic_field)
+					.show()
+					.attr('data-dynamic-field', dynamic_enabled_setting)
+					.find('label .cform-required-field').addClass('cform-required-field')
+					.find('span:first').removeClass('hidden');
+
+				if (related_field === 'mobilephone') {
+					window.AEWPFrontEnd.addPaddingTelInput(cform_id, hash)
+									}
+			} else {
+				var other_related_fields = jQuery('[data-ae-optin-related-field="' + related_field + '"]:checked');
+				if (other_related_fields.length === 0) {
+					jQuery(dynamic_field)
+						.hide()
+						.attr('data-dynamic-field', dynamic_enabled_setting)
+						.find('label .cform-required-field').addClass('hidden')
+						.find('span:first')
+							.addClass('hidden');
+				}
+			}
+		}
+		return;
+	}
+}
+
+//
+// update birthdate from the three DMY inputs (AEJS framework takes single input for DOB)
+//
+AEJSWP.updateDOB = function() {
+	var day = jQuery("input[name='s_birthdate_day']").val();
+	if(typeof day !== 'undefined' && day.length > 0) {
+		day = AEJSWP.padString(day, 2);
+	}
+	var month = jQuery("input[name='s_birthdate_month']").val();
+	if(typeof month !== 'undefined' && month.length > 0) {
+		month = AEJSWP.padString(month, 2);
+	}
+	var year = 1900; //set rudementry year to pass Push API verification
+	jQuery("input[name='birthdate']").val(year + '-' + month + '-' + day);
+};
+
+//
+// Sets form error message
+//
+AEJSWP.setFormError = function(form, msg) {
+	jQuery('.ae-cform-error-block', form).html(msg).show();
+};
+
+//
+// Hides a form error message
+//
+AEJSWP.hideFormError = function(form) {
+	jQuery('.ae-cform-error-block', form).hide();
+};
+
+//
+// Disables Sign-up Form Submit amd Social buttons and adds a class
+//
+AEJSWP.enableSignUpFormSubmitButtons = function(checkboxId, cformId, enable, hash) {
+	const container = jQuery(`.ae-cform-modal-container[data-ae-cform-id="${cformId}"].${hash}`);
+    if (AEJSWP.custom_forms[cformId]['block_signup_submit'] == 1) {
+        if (parseInt(AEJSWP.custom_forms[cformId]['modal_display']) == 1) {
+    		var registerButton = jQuery(container).find(`.ae-cform-modal-container[data-ae-cform-id="${cformId}"]`);
+    	} else {
+    		var registerButton = jQuery(container).find(`.ae-cform-container[data-ae-cform-id="${cformId}"]`);
+    	}
+    	// check other optins in the same container, if any are checked, do nothing
+    	var existingChecked = false;
+    	jQuery('#ae-cform-optins-container-' + cformId).each(function() {
+    		jQuery(this).find('.ae-cform-optin-checkbox').each(function() {
+    			// do not run if this is related artist optin as the parent optin needs to be checked for it to submit
+    			if (jQuery(this).is(':checked') && jQuery(this).attr('id') != checkboxId && typeof jQuery(this).data("ae-optin-id") == 'number') {
+    				enable = true;
+    			}
+    		})
+    	});
+    	if (AEJSWP.vv_auto_post_enabled == true) {
+    		AEJSWP.debugOutput('VV autopost enabled');
+    		enable = true;
+    	}
+    	if (enable == true) {
+    		// remove disabled attribute from submit button
+    		registerButton.find('.ae-cform-item-submit-button > input').removeAttr('disabled');
+    		// remove disabled class from submit button
+    		registerButton.find('.ae-cform-item-submit-button > input').removeClass('ae-cform-item-submit-button-disabled');
+    		// re-enable the onclick attr on social button
+    		registerButton.find('.ae-cform-social-link').each(function() {
+    			if (typeof jQuery(this).data('ae-cform-social-button-service-id') !== 'undefined' && typeof jQuery(this).attr('onclickholder') !== 'undefined') {
+    				// move the contents of the holder attr to onclick attr
+    				var onClickAttrHolderEnable = jQuery(this).attr('onclickholder');
+    				jQuery(this).removeAttr('onclickholder');
+    				jQuery(this).attr('onclick', onClickAttrHolderEnable);
+    				jQuery(this).removeClass('ae-cform-item-social-button-disabled')
+    			}
+    		});
+    	} else { // disable
+    		// remove the disable attribute from register button
+    		registerButton.find('.ae-cform-item-submit-button > input').attr('disabled','disabled');
+
+    		// add disabled class to the button section, this can be listened for and used to inform the user
+    		registerButton.find('.ae-cform-item-submit-button > input').addClass('ae-cform-item-submit-button-disabled')
+
+    		registerButton.find('.ae-cform-social-link').each(function() {
+    			// jQuery(this).children('.ae-cform-signin-button').attr('disabled','disabled'); // DOES NOT WORK
+    			if (typeof jQuery(this).data('ae-cform-social-button-service-id') !== 'undefined') {
+    				// move the contents of the onclick attr to a holder attr
+    				var onClickAttrHolderDisable = jQuery(this).attr('onclick');
+    				jQuery(this).removeAttr('onclick');
+    				jQuery(this).attr('onclickholder', onClickAttrHolderDisable);
+    				jQuery(this).addClass('ae-cform-item-social-button-disabled')
+    			}
+    		});
+    	}
+    } else {
+		const checkedOptins = AEJSWP.getCheckedOptins(cformId, hash)
+		AEJSWP.setSocialSignupEnabled(checkedOptins.length > 0, cformId, hash)
+	}
+};
+
+AEJSWP.setSocialSignupEnabled = function(enabled, cformId, hash) {
+	let container
+	if (parseInt(AEJSWP.custom_forms[cformId]['modal_display']) == 1) {
+		container = jQuery(`.ae-cform-modal-container[data-ae-cform-id="${cformId}"].${hash}`);
+	} else {
+		container = jQuery(`.ae-cform-container[data-ae-cform-id="${cformId}"].${hash}`);
+	}
+
+	if (container.length) {
+		container.find('.ae-cform-social-link:not(.email)').each(function() {
+			if (enabled) {
+				if (
+					typeof jQuery(this).data('ae-cform-social-button-service-id') !== 'undefined'
+					&& typeof jQuery(this).attr('onclickholder') !== 'undefined'
+				) {
+					// move the contents of the holder attr to onclick attr
+					var onClickAttrHolderEnable = jQuery(this).attr('onclickholder');
+					jQuery(this).removeAttr('onclickholder');
+					jQuery(this).attr('onclick', onClickAttrHolderEnable);
+					jQuery(this).removeClass('ae-cform-social-disabled')
+				}
+			} else {
+				if (typeof jQuery(this).data('ae-cform-social-button-service-id') !== 'undefined') {
+    				// move the contents of the onclick attr to a holder attr
+    				var onClickAttrHolderDisable = jQuery(this).attr('onclick');
+    				jQuery(this).removeAttr('onclick');
+    				jQuery(this).attr('onclickholder', onClickAttrHolderDisable);
+					jQuery(this).addClass('ae-cform-social-disabled')
+    			}
+			}
+		});
+	}
+}
+
+AEJSWP.getCheckedOptins = function (cformId, hash) {
+	const checkedOptins = [];
+	const optIns = AEJSWP.getUserOptinChoices(cformId, false, hash)
+	if (optIns) {
+		for (const i in optIns) {
+			const optIn = optIns[i]
+			if (optIn.user_choice) {
+				checkedOptins[i] = optIn
+			}
+		}
+	}
+	return checkedOptins
+}
+
+/**************************
+ *
+ * "Public" Methods - these are used by integrators to extend default functionality
+ *
+ */
+
+//
+// add a custom aejsready handler
+//
+// TODO: add an optional order param to define the order in which these custom functions are called
+AEJSWP.add_aejsready_handler = function(function_name) {
+	AEJSWP.debugOutput('Adding custom aejsready handler function : ' + function_name);
+	AEJSWP.aejsready_handlers.push(function_name);
+};
+
+AEJSWP.addMailingListFormCompleteCallback = function(functionName, priority = 10) {
+	AEJSWP.debugOutput('Adding custom mailing list form completed handler function : ' + functionName);
+    if (typeof AEJSWP.mailingListFormCompletedCallbacks[priority] === 'undefined') {
+        AEJSWP.mailingListFormCompletedCallbacks[priority] = []
+    }
+    AEJSWP.mailingListFormCompletedCallbacks[priority].push(functionName);
+};
+
+/**
+ * Wait for callback to be executed until event_name has been triggered
+ * @param event_name
+ * @param callback
+ */
+AEJSWP.add_wait_for_event = function(event_name) {
+    AEJSWP.debugOutput('Adding event waiter: ' + event_name);
+    AEJSWP.event_waiters[event_name] = false;
+};
+
+/**
+ * Wait for callback to be executed until event_name has been triggered
+ * @param event_name
+ * @param callback
+ */
+AEJSWP.maybe_wait_for_event = function(event_name, callback) {
+    AEJSWP.debugOutput('Maybe waiting for event : ' + event_name);
+    if(typeof AEJSWP.event_waiters[event_name] === 'undefined' || AEJSWP.event_waiters[event_name] !== false) {
+        AEJSWP.debugOutput('Wait not required, callback is ready for : ' + event_name);
+        callback();
+    } else {
+        AEJSWP.debugOutput('Waiting for callback : ' + event_name);
+        AEJSWP.event_waiters[event_name] = callback;
+    }
+};
+
+/**
+ * Execute wait for event
+ * @param event_name
+ */
+AEJSWP.execute_wait_for_event = function(event_name) {
+    AEJSWP.debugOutput('Trying to executing event waiter : ' + event_name);
+    if(typeof AEJSWP.event_waiters[event_name] !== 'undefined' && AEJSWP.event_waiters[event_name] !== false) {
+        AEJSWP.debugOutput('Event is ready to be executed: ' + event_name);
+        AEJSWP.event_waiters[event_name]();
+    } else {
+        AEJSWP.debugOutput('Event not ready for execution so adding to waiting list: ' + event_name);
+        AEJSWP.event_waiters[event_name] = true;
+    }
+};
+
+/**
+ * Add filter callback for data
+ * @param filter_name
+ * @param callback
+ */
+AEJSWP.add_data_filter = function(filter_name, callback) {
+    AEJSWP.debugOutput('Adding data filter: ' + filter_name);
+    AEJSWP.data_filters[filter_name] = callback;
+};
+
+/**
+ * Apply a filter on set of data (works the same way as WordPress filters)
+ * @param filter_name
+ * @param data
+ *
+ * @return mixed
+ */
+AEJSWP.run_filter = function(filter_name, data) {
+    if(typeof AEJSWP.data_filters[filter_name] !== 'undefined') {
+        //filter was found so let's run the function with data as param
+        return AEJSWP.data_filters[filter_name](data);
+    } else {
+        //filter was not found so return data without filtering
+        return data;
+    }
+};
+
+//
+// perform a complete logout action - this clears the AE session & WP session (as necessary)
+//
+AEJSWP.logout = function() {
+	// clear any AEJSWP session states
+	AEJSWP.clearSessionStorage();
+	// if user is logged in to WP, use AE logout URL (bare version without a pre-specified return_url) with a return_url to the WP logout URL (which contains a return to the current page)
+	// if not logged in, just use AE logout URL (already appended with a return_url to the current page)
+	var logout_url = (AEJSWP.user_logged_in) ? AEJSWP.ae_logout_url_bare + '&return_url=' + AEJSWP.wp_logout_url : AEJSWP.ae_logout_url;
+	AEJSWP.debugOutput('Logout. Redirecting to AE logout handler : ' + logout_url);
+	window.location.href = logout_url;
+};
+
+//
+// Country Detection
+// - when method is called it first tries to see if AE user object is present and grabs country from there if available
+// - next it makes an ajax call to the server which fetches the country using user IP and MaxMind DB
+// - takes function name parameter and fires the function once complete with country code as parameter
+//
+AEJSWP.get_user_country = function(complete_func) {
+	if (typeof complete_func === 'undefined') {
+		complete_func = false;
+	}
+	// check the AE User object for country data and if so, use this and run the complete_func callback
+	if(typeof AEJSWP.aeJS !== 'undefined' && Object.keys(AEJSWP.aeJS.user).length > 0) {
+		if(typeof AEJSWP.aeJS.user.data !== 'undefined' && typeof AEJSWP.aeJS.user.data.CountryCode !== 'undefined' && AEJSWP.aeJS.user.data.CountryCode !== null && AEJSWP.aeJS.user.data.CountryCode.length > 0) {
+			if (complete_func) {
+				AEJSWP.executeFunctionByName(complete_func, window, AEJSWP.aeJS.user.data.CountryCode);
+			}
+			return;
+		}
+	}
+	// check if there is a local storage item and if so, don't keep running admin AJAX requests.
+	var country_code = AEJSWP.getLocalStorageItem('aejswp_user_country_by_ip') != null ? AEJSWP.getLocalStorageItem('aejswp_user_country_by_ip') : false;
+	if (country_code && complete_func) {
+		AEJSWP.executeFunctionByName(complete_func, window, country_code);
+	} else {
+		jQuery.ajax({
+			type: 'POST',		// for older versions of jquery
+			method: 'POST',
+			url: AEJSWP.ajaxurl,
+			data: {'action': AEJSWP.ajax_action_user_get_country},
+			success: function( country_code ) {
+				AEJSWP.setLocalStorageItem('aejswp_user_country_by_ip', country_code);
+				if (complete_func) {
+					AEJSWP.executeFunctionByName(complete_func, window, country_code);
+				}
+			}
+		});
+	}
+};
+
+//
+// Trigger framework flow
+//
+// Replacement method for AEJSWP.aeJS.trigger.flow();
+// Checks for browser config errors first before calling AEJSWP.aeJS.trigger.flow(); directly
+//
+AEJSWP.triggerFrameworkFlow = function() {
+
+	// if safari incognito or nocookies detected
+	if ( AEJSWP.detect_safari_incognito() || !AEJSWP.detect_cookies_enabled() ) {
+
+		// show the appropriate error message in a modal
+		jQuery('body').append('<div id="ae-browser-config-error" style="display:none;">' + ( AEJSWP.detect_safari_incognito() ? AEJSWP.safari_incognito_error : AEJSWP.cookies_disabled_error ) + '</div>');
+		jQuery('#ae-browser-config-error').modal();
+
+	}
+	// no browser config errors detected, trigger flow
+	else {
+		AEJSWP.aeJS.trigger.flow();
+	}
+};
+
+//
+// add query string to the return_url
+// see README for detail
+//
+AEJSWP.add_url_param_to_return_url = function(key, value) {
+
+	// if not already defined, use current location
+	if (typeof(AEJSWP.return_url) == "undefined" || AEJSWP.return_url == '') {
+		AEJSWP.return_url = window.location.href;
+	}
+
+	// guard against the same key being added mutiple times (saves integrator doing it)
+	if(AEJSWP.getQueryStringValue(key) == '') {
+		// modify return_url
+		AEJSWP.return_url = AEJSWP.addURLParameter(AEJSWP.return_url, key, value);
+		// update the aeJS framework settings with it
+		AEJSWP.aeJS.settings['return_url'] = AEJSWP.return_url;
+		// also apply to login_redirect_url if defined
+	    if( typeof(AEJSWP.login_redirect_url) !== 'undefined' && AEJSWP.login_redirect_url !== '') {
+			AEJSWP.login_redirect_url = AEJSWP.addURLParameter(AEJSWP.login_redirect_url, key, value);
+		}
+	}
+};
+
+
+//
+//add query string to the return_url parms
+//Adds Parms to return_url so when redirected back to the site from login the parms is passsed
+//Example result http://test.com/wp-admin/admin-ajax.php?return_url=http%3A%2F%2Ftest.com%2F%3Ftestparm%3Dnewvalue
+//
+AEJSWP.add_url_param_to_return_url_parms = function(key, value) {
+    if (typeof(AEJSWP.return_url) === "undefined" || AEJSWP.return_url === '') {
+            AEJSWP.return_url = window.location.href;
+    }
+
+
+	var return_url = AEJSWP.getQueryString('return_url',AEJSWP.aeJS.settings['return_url'])
+
+	if (return_url === null){
+			return_url = window.location.origin + window.location.pathname;
+	}
+	else{
+			return_url = decodeURIComponent(return_url);
+	}
+
+  if (return_url != null && return_url.trim().length > 0){
+      return_url = AEJSWP.addURLParameter(return_url, key, value);
+      if (AEJSWP.login_redirect_url.trim().length > 0){
+          AEJSWP.login_redirect_url = AEJSWP.addURLParameter(AEJSWP.login_redirect_url, key, value);
+          AEJSWP.aeJS.settings.login_redirect_url = AEJSWP.login_redirect_url;
+      }
+      else
+      {
+          AEJSWP.login_redirect_url = decodeURIComponent(return_url);
+          AEJSWP.aeJS.settings.login_redirect_url = AEJSWP.login_redirect_url;
+      }
+      AEJSWP.return_url = AEJSWP.queryStringUrlReplacement(AEJSWP.return_url, 'return_url', encodeURIComponent(return_url));
+      AEJSWP.aeJS.settings['return_url'] = AEJSWP.return_url;
+  }
+
+	AEJSWP.debugOutput('return url updated :' + AEJSWP.aeJS.settings['return_url']);
+
+	// finally drop some state info so we can apply same key/value to verify email/password reset return
+	if (AEJSWP.hasOwnProperty('param_on_return_url_key') && Array.isArray(AEJSWP.param_on_return_url_key)) {
+			AEJSWP.param_on_return_url_key.push(key);
+			AEJSWP.param_on_return_url_value.push(value);
+	}
+	else {
+			AEJSWP.param_on_return_url_key = [key];
+			AEJSWP.param_on_return_url_value = [value];
+	}
+	AEJSWP.debugOutput('AEJSWP param_on_return_url_key updated :' + AEJSWP.param_on_return_url_key);
+	AEJSWP.debugOutput('AEJSWP param_on_return_url_value updated :' + AEJSWP.param_on_return_url_value);
+};
+
+AEJSWP.remove_url_param_to_return_url_parms = function(key) {
+    // if not already defined, use current location
+    if (typeof(AEJSWP.return_url) == "undefined" || AEJSWP.return_url == '') {
+            AEJSWP.return_url = window.location.href;
+    }
+    var return_url = decodeURIComponent(AEJSWP.getQueryString('return_url',AEJSWP.aeJS.settings['return_url']));
+    if (return_url.trim().length > 0){
+        return_url = AEJSWP.remove_url_parameter(return_url, key);
+
+        if (AEJSWP.login_redirect_url.trim().length > 0){
+            AEJSWP.login_redirect_url = AEJSWP.remove_url_parameter(decodeURIComponent(AEJSWP.login_redirect_url), key);
+            AEJSWP.aeJS.settings.login_redirect_url = decodeURIComponent(AEJSWP.login_redirect_url);
+        }
+        else
+        {
+            AEJSWP.login_redirect_url = decodeURIComponent(return_url);
+            AEJSWP.aeJS.settings.login_redirect_url = AEJSWP.login_redirect_url;
+        }
+
+        AEJSWP.return_url = AEJSWP.queryStringUrlReplacement(AEJSWP.return_url, 'return_url', encodeURIComponent( AEJSWP.remove_url_parameter(decodeURIComponent(return_url),key)));
+        AEJSWP.aeJS.settings['return_url'] = AEJSWP.return_url;
+    }
+};
+AEJSWP.remove_url_parameter = function(url, parameter) {
+    //prefer to use l.search if you have a location/link object
+    var urlparts = url.split('?');
+    if (urlparts.length>=2) {
+
+        var prefix = encodeURIComponent(parameter)+'=';
+        var pars = urlparts[1].split(/[&;]/g);
+
+        //reverse iteration as may be destructive
+        for (var i= pars.length; i-- > 0;) {
+            //idiom for string.startsWith
+            if (pars[i].lastIndexOf(prefix, 0) !== -1) {
+                pars.splice(i, 1);
+            }
+        }
+
+        url= urlparts[0] + (pars.length > 0 ? '?' + pars.join('&') : "");
+        return url;
+    } else {
+        return url;
+    }
+};
+//
+//Replace Query string in URL string
+//
+AEJSWP.queryStringUrlReplacement = function (url, param, value)
+{
+    var re = new RegExp("[\\?&]" + param + "=([^&#]*)", "i"), match = re.exec(url), delimiter, newString;
+    
+    if (match === null) {
+        // append new param
+        var hasQuestionMark = /\?/.test(url);
+        delimiter = hasQuestionMark ? "&" : "?";
+        newString = url + delimiter + param + "=" + value;
+    } else {
+        delimiter = match[0].charAt(0);
+        newString = url.replace(re, delimiter + param + "=" + value);
+    }
+
+    return newString;
+};
+//
+//Get qury URL in string
+//
+AEJSWP.getQueryString = function ( field, url ) {
+        var href = url ? url : window.location.href;
+        var reg = new RegExp( '[?&]' + field + '=([^&#]*)', 'i' );
+        var string = reg.exec(href);
+        return string ? string[1] : null;
+};
+
+//
+// resumes the login redirect process after it has been paused by block_login_redirect
+//
+AEJSWP.resumeLoginRedirect = function() {
+	if (typeof AEJSWP.paused_redirect_url != 'undefined') {
+		window.location.href = AEJSWP.paused_redirect_url;
+	}
+};

@@ -1,0 +1,44 @@
+//Show ECRM functions
+function grShowEcrm() {
+    var show = false;
+    if (typeof (sessionStorage) !== 'undefined') {
+        show = sessionStorage.getItem('umggr-newsletter-first-load');
+    }
+    return show;
+}
+function openModalEcrm(){
+    if (
+      gr_global_vars.mailListEnabled === 'on'
+      && gr_global_vars.showEcrmFirstLoad === 'true'
+      && (!grShowEcrm() || grShowEcrm()===null)
+    ) {
+        (function ($) {
+            $(document).ready(function(){
+                setTimeout(function(){
+                    $('#ae-cform-modal-display-cta-1').trigger('click');
+                    if (typeof (sessionStorage) !== 'undefined') {
+                        sessionStorage.setItem(
+                          'umggr-newsletter-first-load',
+                          true
+                        );
+                    }
+                }, parseInt(gr_global_vars.showEcrmFirstLoadTimer * 1000));
+            });
+        })(jQuery);
+    }
+}
+
+function gr_ae_wpaejsready(){
+    openModalEcrm();
+}
+
+if (typeof(AEJSWP) !== 'undefined') {
+    AEJSWP.add_aejsready_handler("gr_ae_wpaejsready");
+}
+//End Show ECRM
+
+(function ($) {
+    $(document).ready(function(){
+        jQuery('noscript').prependTo(document.body);
+    });
+})(jQuery)

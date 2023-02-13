@@ -1,0 +1,9 @@
+(function (d, s, id) {
+    var domain = 'https://consent.umusic.com/v2/';
+    var js, ujs = d.getElementsByTagName(s)[0];
+    if (d.getElementById(id)) return;
+    js = d.createElement(s); js.id = id;
+    js.async = true;
+    js.src = domain + "load.js";
+    ujs.parentNode.insertBefore(js, ujs);
+}(document, 'script', 'umg_gdpr'));
