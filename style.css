@@ -146,3 +146,10 @@ h2 span {
 	margin-top: 20px;
 	margin-bottom: 20px;
 }
+
+ul {
+	font-family: "Century";
+	font-size: 18px;
+	font-style: italic;
+	color: #ebebeb;
+}

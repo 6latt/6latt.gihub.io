@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Last.fm Authentication Callback</title>
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+</head>
+<body>
+  <h1>Authenticating with Last.fm...</h1>
+  <script>
+    // Replace API_KEY and API_SECRET with your Last.fm API credentials
+    var API_KEY = "e4af24ab00cbcc0ee9bd9a396e8e8d7d";
+    var API_SECRET = "14cdf88bab877001ef7bf632d5c6ad38";
+    
+    // Parse the authentication token from the URL query string
+    var token = new URLSearchParams(window.location.search).get("token");
+    
+    // Exchange the token for a session key using Last.fm API
+    $.getJSON("https://ws.audioscrobbler.com/2.0/?method=auth.getSession&api_key=" + API_KEY + "&api_secret=" + API_SECRET + "&token=" + token + "&format=json", function(data) {
+      var sessionKey = data.session.key;
+      // TODO: Store the session key in user's account or session
+      // Redirect the user to your application homepage or dashboard
+      window.location.href = "https://aaronrcarmichael.com";
+    });
+  </script>
+</body>
+</html>
