@@ -71,6 +71,8 @@ body {
 	font-size: 1.1em;
 	display: table;
 	letter-spacing: var(--letter-spacing);
+	font-variation-settings: "MONO" 1;
+	
 }
 
 
@@ -93,6 +95,7 @@ p {
 	margin: auto;
 	padding: 5px;
 	border: 2px solid #f5f5f0;
+
 }
 
 a {
@@ -168,9 +171,10 @@ h2 span {
 }
 
 ul {
-	font-family: abc-v,monospace;
+	font-family: abc,monospace;
 	font-size: 18px;
 	color: #ebebeb;
+	text-transform: uppercase;
 }
 
 img {
@@ -188,7 +192,8 @@ img {
 }
 
 li {
-	font-family: abc-v, monospace;
+	font-family: abc, monospace;
 	font-size: 18px;
 	color: #f5f5f0;
+	text-transform: uppercase;
 }
