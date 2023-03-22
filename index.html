@@ -40,8 +40,8 @@
         <meta name="next-head-count" content="24" /> -->
         
     		<link rel="stylesheet" href="style.css"/>    
-		    <!-- <link rel="icon" href="./assets/images/icon.png"/>
-
+		    <link rel="icon" href="./assets/images/icon.png"/>
+<!-- 
         <link
         rel="preload"
         href="_next/static/css/83a57c2668373b4e.css"
@@ -107,12 +107,69 @@
 
     </head>
 <body>
-        
-    <div class="module">
-        <h1><span>Aaron</span></h1>
+   <header>
+      <nav>
+        <ul>
+          <li><a href="#about">About</a></li>
+          <li><a href="#portfolio">Portfolio</a></li>
+          <li><a href="#interests">Interests</a></li>
+        </ul>
+      </nav>
+    </header>     
 
+        <div class="module">
+        <h1><span>Aaron</span></h1>
+        <section id="about">
+          <h1>About Me</h1>
+          <p>Student</p>
+        </section>
     </div>
-    <div id="lastfm">
+  <div class="row">
+    <div class="column">
+    <main>
+      <section id="portfolio">
+        <h1>Portfolio</h1>
+        <ul>
+          <li>
+            <a href="#">
+              <!-- <img src="portfolio-item-1.jpg" alt="Portfolio Item 1"> -->
+              <h3>Aural Exploration</h3>
+            </a>
+          </li>
+          <li>
+            <a href="#">
+              <!-- <img src="portfolio-item-2.jpg" alt="Portfolio Item 2"> -->
+              <h3>Modeling and Simulation</h3>
+            </a>
+          </li>
+          <li>
+            <a href="#">
+              <!-- <img src="portfolio-item-3.jpg" alt="Portfolio Item 3"> -->
+              <h3>Photography</h3>
+            </a>
+          </li>
+        </ul>
+      </section>
+      
+      <section id="interests">
+        <h1>Interests</h1>
+        <ul>
+          <li>Machine Learning</li>
+          <li>Rock Climbing</li>
+          <li>Concerts</li>
+          <li>Travel</li>
+          <li>Fashion</li>
+
+
+        </ul>
+      </section>
+    </main>
+  </div>
+<div class="column">
+
+    <h1>Recent Listens</h1>
+
+<div id="lastfm">
   <script>
     // Replace API_KEY with your Last.fm API key
     var API_KEY = "e4af24ab00cbcc0ee9bd9a396e8e8d7d";
@@ -137,5 +194,10 @@
     });
   </script>
 </div>
+</div>
+</div>
+<footer>
+  <p>&copy; 2023 Aaron R. Carmichael</p>
+</footer>
 </body>
 </html>
