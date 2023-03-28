@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Photography Portfolio</title>
+  <style>
+    /* Set the style for the grid container */
+    .grid-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      grid-gap: 10px;
+    }
+
+    /* Set the style for the grid items */
+    .grid-item {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+  </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- <script src="aaron.js"></script>
+  <meta name="robots" content="index,follow" />
+  <meta
+  name="description"
+  content="An Online Portfolio containing and pertaining to everything in my Quiddity"
+  />
+  <meta property="og:title" content="Aaron R. Carmichael" />
+  <meta
+  property="og:description"
+  content="An Online Portfolio containing and pertaining to everything in my Quiddity"
+  />
+  <meta property="og:url" content="https://aaronrcarmichael.com" /> 
+  <meta property="og:type" content="website" /> -->
+  <!-- <meta property="og:image" content="https://aino.agency/aino.jpg" />
+  <meta
+  property="og:image:alt"
+  content="Aino — Design and Technology Agency"
+  />
+  <meta property="og:image:type" content="image/jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="627" />
+  <meta property="og:image" content="https://aino.agency/aino-square.jpg" />
+  <meta
+  property="og:image:alt"
+  content="Aino — Design and Technology Agency"
+  />
+  <meta property="og:image:type" content="image/jpg" />
+  <meta property="og:image:width" content="1024" />
+  <meta property="og:image:height" content="1024" />
+  <link rel="canonical" href="https://aino.agency" />
+  <meta name="theme-color" content="#161615" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" sizes="180x180" />
+  <link rel="manifest" href="/site.webmanifest" />
+  <meta name="next-head-count" content="24" /> -->
+
+  <link rel="stylesheet" href="style.css"/>    
+  <link rel="icon" href="./assets/images/icon.png"/>
+  <!-- 
+  <link
+  rel="preload"
+  href="_next/static/css/83a57c2668373b4e.css"
+  as="style"
+  />
+  <link
+  rel="stylesheet"
+  href="_next/static/css/83a57c2668373b4e.css"
+  data-n-g=""
+  />
+  <link
+  rel="preload"
+  href="_next/static/css/2f3faf2166104784.css"
+  as="style"
+  />
+  <link
+  rel="stylesheet"
+  href="_next/static/css/2f3faf2166104784.css"
+  data-n-p=""
+  />  -->
+  <noscript data-n-css=""></noscript>
+  <script
+  defer=""
+  nomodule=""
+  src="_next/static/chunks/polyfills-c67a75d1b6f99dc8.js"
+  ></script>
+  <script
+  src="_next/static/chunks/webpack-2af0facdddcb2f21.js"
+  defer=""
+  ></script>
+  <script
+  src="_next/static/chunks/framework-3b5a00d5d7e8d93b.js"
+  defer=""
+  ></script>
+  <script
+  src="_next/static/chunks/main-004176e54ace51f4.js"
+  defer=""
+  ></script>
+  <script
+  src="_next/static/chunks/pages/_app-fc817d1711ffeb9b.js"
+  defer=""
+  ></script>
+  <script
+  src="_next/static/chunks/675-ad37e7e4a38efbd8.js"
+  defer=""
+  ></script>
+  <script
+  src="_next/static/chunks/pages/index-d9013001145ee820.js"
+  defer=""
+  ></script>
+  <script
+  src="_next/static/lLGlEsOob0KrG4LRXvaYI/_buildManifest.js"
+  defer=""
+  ></script>
+  <script
+  src="_next/static/lLGlEsOob0KrG4LRXvaYI/_ssgManifest.js"
+  defer=""
+  ></script>
+
+
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+</head>
+<body>
+  <h1>Photography Portfolio</h1>
+
+      <!-- The grid container for displaying the images -->
+    <div class="grid-container">
+      <!-- The script will generate the grid items here -->
+    </div>
+
+    <!-- JavaScript to read the images from the server and create grid items for each one -->
+    <script>
+      // Specify the path to the server script that returns the list of images
+      const serverPath = "get_images.php";
+
+      // Fetch the list of images from the server
+      fetch(serverPath)
+        .then(response => response.json())
+        .then(data => {
+          // Create a grid item for each image and add it to the grid container
+          const gridContainer = document.querySelector(".grid-container");
+          data.forEach(filename => {
+            const img = document.createElement("img");
+            img.src = "portfolio/" + filename;
+            img.alt = filename;
+            const gridItem = document.createElement("div");
+            gridItem.classList.add("grid-item");
+            gridItem.appendChild(img);
+            gridContainer.appendChild(gridItem);
+          });
+          if (data.length === 0) {
+            // Display a message if no images are found
+            const message = document.createElement("p");
+            message.textContent = "No images found.";
+            gridContainer.appendChild(message);
+          }
+        })
+        .catch(error => console.error(error));
+    </script>
+
+</body>
+</html>
