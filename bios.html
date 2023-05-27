@@ -3,18 +3,23 @@
 <head>
   <title>Photography Portfolio</title>
   <style>
-    /* Set the style for the grid container */
     .grid-container {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      grid-gap: 10px;
+      justify-content: center;
+      align-items: center;
+      flex-wrap: wrap;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 20px;
     }
-
-    /* Set the style for the grid items */
+  
     .grid-item {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
+    margin: 20px;
+    }    
+
+    .grid-item img {
+      display: block;
+      max-width: 100%;
+      height: auto;
     }
   </style>
   <meta charset="UTF-8">
@@ -120,42 +125,34 @@
   <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
 </head>
 <body>
-  <h1>Photography Portfolio</h1>
+ <h1>Photography Portfolio</h1>
 
-      <!-- The grid container for displaying the images -->
-    <div class="grid-container">
-      <!-- The script will generate the grid items here -->
-    </div>
+<!-- The grid container for displaying the images -->
+<div class="grid-container">
+  <!-- The script will generate the grid items here -->
+</div>
 
-    <!-- JavaScript to read the images from the server and create grid items for each one -->
-    <script>
-      // Specify the path to the server script that returns the list of images
-      const serverPath = "get_images.php";
+<!-- Script to generate grid items for each image -->
+<script>
+  // Specify the list of image filenames
+  const imageFilenames = [
+    "IMG_1784.jpg",
+    "IMG_1739.jpg",
+    // Add more filenames as needed
+  ];
 
-      // Fetch the list of images from the server
-      fetch(serverPath)
-        .then(response => response.json())
-        .then(data => {
-          // Create a grid item for each image and add it to the grid container
-          const gridContainer = document.querySelector(".grid-container");
-          data.forEach(filename => {
-            const img = document.createElement("img");
-            img.src = "portfolio/" + filename;
-            img.alt = filename;
-            const gridItem = document.createElement("div");
-            gridItem.classList.add("grid-item");
-            gridItem.appendChild(img);
-            gridContainer.appendChild(gridItem);
-          });
-          if (data.length === 0) {
-            // Display a message if no images are found
-            const message = document.createElement("p");
-            message.textContent = "No images found.";
-            gridContainer.appendChild(message);
-          }
-        })
-        .catch(error => console.error(error));
-    </script>
+  // Create a grid item for each image and add it to the grid container
+  const gridContainer = document.querySelector(".grid-container");
+  imageFilenames.forEach(filename => {
+    const img = document.createElement("img");
+    img.src = "portfolio/" + filename;
+    img.alt = filename;
+    const gridItem = document.createElement("div");
+    gridItem.classList.add("grid-item");
+    gridItem.appendChild(img);
+    gridContainer.appendChild(gridItem);
+  });
+</script>
 
 </body>
 </html>
