@@ -91,7 +91,7 @@ function render(a_0, omega_0) {
     v.x += dx * t;
     v.y += dy * t;
     v.z += dz * t;
-  });++
+  });
 
   geometry.verticesNeedUpdate = true;
   group.rotation.x += 0.001;
