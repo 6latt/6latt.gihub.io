@@ -81,17 +81,17 @@ function render(a_0, omega_0) {
   var geometry = pc.geometry;
   var a = a_0 + Math.random() * 0.5;
   var omega = omega_0 + Math.random() * 0.5;
-  var t = 0.1; // Feel free to adjust the timestep
+  var t = 0.1;
 
   geometry.vertices.forEach(function(v){
-      var dx = -omega * v.x + a * Math.sin(v.y);
-      var dy = -omega * v.y + a * Math.sin(v.z);
-      var dz = -omega * v.z + a * Math.sin(v.x);
+    var dx = -omega * v.x + a * Math.sin(v.y);
+    var dy = -omega * v.y + a * Math.sin(v.z);
+    var dz = -omega * v.z + a * Math.sin(v.x);
 
-      v.x += dx * t;
-      v.y += dy * t;
-      v.z += dz * t;
-  });
+    v.x += dx * t;
+    v.y += dy * t;
+    v.z += dz * t;
+  });++
 
   geometry.verticesNeedUpdate = true;
   group.rotation.x += 0.001;
@@ -139,12 +139,16 @@ function timeskip(){
     var g = 2.8005228465422123;
     var t = 0.0057;
 
-    for (var i=0;i<100;i++) {
-        geometry.vertices.forEach(function(v){
-            v.x = v.x - t*a*v.x +t*v.y*v.y -t*v.z*v.z + t*a*f;
-            v.y = v.y - t*v.y + t*v.x*v.y - t*b*v.x*v.z + t*g;
-            v.z = v.z - t*v.z + t*b*v.x*v.y + t*v.x*v.z;
-        })
+    for (var i=0; i<100; i++) {
+      geometry.vertices.forEach(function(v){
+        var dx = -omega * v.x + a * Math.sin(v.y);
+        var dy = -omega * v.y + a * Math.sin(v.z);
+        var dz = -omega * v.z + a * Math.sin(v.x);
+  
+        v.x += dx * t;
+        v.y += dy * t;
+        v.z += dz * t;
+      })
 
         geometry.verticesNeedUpdate = true;
         group.rotation.x += 0.01;
