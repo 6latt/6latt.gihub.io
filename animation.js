@@ -34,7 +34,7 @@ function init() {
     controls.maxPolarAngle = Math.PI / 2;
     controls.enableZoom = false;
 
-    var arrayCurve = lorenz(a_0, b_0, f_0, g_0);
+    var arrayCurve = thomas(a_0, b_0, f_0, g_0);
     var curve = new THREE.CatmullRomCurve3(arrayCurve);
     var geometry = new THREE.BufferGeometry();
     geometry.vertices = curve.getPoints(111111);
@@ -107,23 +107,29 @@ function render(a_0, b_0, f_0, g_0) {
     }, false );
 };
 
-function lorenz(a, b, f, g){
+function thomas(a, omega){
+    
+  var arrayCurve=[];
+  var x = 0.1;
+  var y = 0.1;
+  var z = 0.1;
+  var t = 0.1;
 
-    var arrayCurve=[];
-    var x = 0.01;
-    var y = 0.01;
-    var z = 0.01;
-    var t = 0.001;
+  for (var i=0; i<100000; i++){
 
-    for (var i=0;i<100000;i++){
-
-        x = x - t*a*x +t*y*y -t*z*z + t*a*f;
-        y = y - t*y + t*x*y - t*b*x*z + t*g;
-        z = z - t*z + t*b*x*y + t*x*z;
-        arrayCurve.push(new THREE.Vector3(x, y, z).multiplyScalar(1));
-    }
-    return arrayCurve;
+      var dx = -omega * x + a * Math.sin(y);
+      var dy = -omega * y + a * Math.sin(z);
+      var dz = -omega * z + a * Math.sin(x);
+      
+      x += dx * t;
+      y += dy * t;
+      z += dz * t;
+      
+      arrayCurve.push(new THREE.Vector3(x, y, z).multiplyScalar(1));
+  }
+  return arrayCurve;
 }
+
 
 // progress through the animation a bit to avoid ugly lines
 function timeskip(){
