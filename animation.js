@@ -63,48 +63,46 @@ function onMouseMove( event ) {
     mouse.y = - ( event.clientY / window.innerHeight ) * 2 + 1;
 }
 
-function render(a_0, b_0, f_0, g_0) {
+function render(a_0, omega_0) {
 
-    requestAnimationFrame( function() { render(a_0, b_0, f_0, g_0) } );
-    controls.update();
-    renderer.render( scene, camera );
+  requestAnimationFrame( function() { render(a_0, omega_0) } );
+  controls.update();
+  renderer.render( scene, camera );
 
-    raycaster.setFromCamera( mouse, camera );
-    // calculate objects intersecting the picking ray
-    var intersects = raycaster.intersectObject( pc );
-    for ( var i = 0; i < intersects.length; i++ ) {
-        intersects[i].point.sub( mouse ).multiplyScalar(5);
-        // pc.geometry.colors[intersects[i].index].set(0xffffff);
-    }
+  raycaster.setFromCamera( mouse, camera );
+  var intersects = raycaster.intersectObject( pc );
+  for ( var i = 0; i < intersects.length; i++ ) {
+      intersects[i].point.sub( mouse ).multiplyScalar(5);
+  }
 
-    pc.geometry.colorsNeedUpdate = true;
+  pc.geometry.colorsNeedUpdate = true;
 
-    // randomly varying the initial parameters of the lorenz attractor
-    var geometry = pc.geometry;
-    var a = a_0+Math.random()*6;
-    var b = b_0+Math.random()*7;
-    var f = f_0+Math.random()*8;
-    var g = g_0+Math.random();
-    var t = 0.0002;
+  // randomly varying the initial parameters of the Thomas attractor
+  var geometry = pc.geometry;
+  var a = a_0 + Math.random() * 0.5;
+  var omega = omega_0 + Math.random() * 0.5;
+  var t = 0.1; // Feel free to adjust the timestep
 
-    //todo: show the parameters live?
+  geometry.vertices.forEach(function(v){
+      var dx = -omega * v.x + a * Math.sin(v.y);
+      var dy = -omega * v.y + a * Math.sin(v.z);
+      var dz = -omega * v.z + a * Math.sin(v.x);
 
-    geometry.vertices.forEach(function(v){
-        v.x = v.x - t*a*v.x +t*v.y*v.y -t*v.z*v.z + t*a*f;
-        v.y = v.y - t*v.y + t*v.x*v.y - t*b*v.x*v.z + t*g;
-        v.z = v.z - t*v.z + t*b*v.x*v.y + t*v.x*v.z;
-    })
+      v.x += dx * t;
+      v.y += dy * t;
+      v.z += dz * t;
+  });
 
-    geometry.verticesNeedUpdate = true;
-    group.rotation.x += 0.001;
-    group.rotation.y += 0.002;
-    group.rotation.z -= 0.001;
+  geometry.verticesNeedUpdate = true;
+  group.rotation.x += 0.001;
+  group.rotation.y += 0.002;
+  group.rotation.z -= 0.001;
 
-    window.addEventListener( 'resize', function () {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize( window.innerWidth, window.innerHeight );
-    }, false );
+  window.addEventListener( 'resize', function () {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize( window.innerWidth, window.innerHeight );
+  }, false );
 };
 
 function thomas(a, omega){
