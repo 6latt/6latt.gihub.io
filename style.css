@@ -39,19 +39,15 @@
 }
 @font-face {
 	font-family: abc;
-	src: url(/_next/static/media/ABCDiatypePlusVariable.77bf2bb2.woff)
-	  format("woff");
-	src: url(/_next/static/media/ABCDiatypePlusVariable.8921cbf7.woff2)
-	  format("woff2");
-	font-weight: 100 700;
+	src: url(./assets/fonts/ABCDiatypePlusVariable.8921cbf7.woff2) format("woff2");
+	src: url(./assets/fonts/ABCDiatypeVariable.94c2fcd7.woff2)	  format("woff2");
 	font-style: normal;
 	font-display: swap;
   }
   @font-face {
 	font-family: abc-v;
-	src: url(/_next/static/media/ABCDiatypeVariable.c50299a4.woff) format("woff");
-	src: url(/_next/static/media/ABCDiatypeVariable.94c2fcd7.woff2)
-	  format("woff2");
+	src: url(./assets/fonts/ABCDiatypePlusVariable.8921cbf7.woff2) format("woff2");
+	src: url(./assets/fonts/ABCDiatypeVariable.94c2fcd7.woff2)	  format("woff2");
 	font-weight: 100 800;
 	font-style: normal;
 	font-display: swap;
